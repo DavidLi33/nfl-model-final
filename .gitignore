@@ -1,0 +1,42 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# macOS
+.DS_Store
+
+# VSCode local settings
+.vscode/settings.json
+
+# Claude / AI local configs
+.claude/settings.local.json
+
+# Excel temp files
+~$*
+
+# Large archive files
+*.zip
+
+# Output/generated files
+output/
+
+# Tracking data
+tracker/*.json
+
+# Large Excel models
+Archive/*.xlsx
+
+# Optional sample spreadsheets
+# Uncomment if desired
+# *.xlsx
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
