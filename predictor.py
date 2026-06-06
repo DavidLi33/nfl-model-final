@@ -487,11 +487,12 @@ def compute_bet_sizing(preds_df: pd.DataFrame, bankroll: float,
     df = preds_df.copy()
     total_pool = bankroll * bet_fraction
 
-    # Collect all positive-value bets (ML and spread only)
+    # Collect all positive-value bets across all recommended bet types.
     ml_bets = df[df['ml_bet'] == 'bet']['ml_value'].clip(lower=0)
     spread_bets = df[df['spread_bet'] == 'bet']['spread_value'].clip(lower=0)
+    total_bets = df[df['total_bet'] == 'bet']['total_value'].clip(lower=0)
 
-    total_value = ml_bets.sum() + spread_bets.sum()
+    total_value = ml_bets.sum() + spread_bets.sum() + total_bets.sum()
 
     if total_value > 0:
         df['ml_bet_amount'] = df.apply(
@@ -502,11 +503,14 @@ def compute_bet_sizing(preds_df: pd.DataFrame, bankroll: float,
             lambda r: max(0, r['spread_value']) / total_value * total_pool
             if r['spread_bet'] == 'bet' else 0, axis=1
         )
+        df['total_bet_amount'] = df.apply(
+            lambda r: max(0, r['total_value']) / total_value * total_pool
+            if r['total_bet'] == 'bet' else 0, axis=1
+        )
     else:
         df['ml_bet_amount'] = 0
         df['spread_bet_amount'] = 0
-
-    df['total_bet_amount'] = 0
+        df['total_bet_amount'] = 0
 
     return df
 

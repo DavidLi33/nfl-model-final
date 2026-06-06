@@ -13,11 +13,11 @@ import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from flask import Flask, render_template_string, request, jsonify, redirect, url_for
+from flask import Flask, render_template_string, request, jsonify, redirect, session
 
 from data_loader import (
     load_master_data, load_team_glossary, load_schedule,
-    get_weekid_range, filter_master_data, build_abbr_to_name,
+    get_weekid_range, filter_master_data, build_abbr_to_name, compute_weekid,
     BACK_TEST_RANGE, YEAR_INDEX_MAP,
 )
 from features import build_feature_table
@@ -25,6 +25,7 @@ from predictor import predict_week, compute_bet_sizing
 from tracker import SeasonTracker
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-nfl-dashboard-secret")
 
 BASE_DIR = Path(__file__).parent
 OUTPUT_DIR = BASE_DIR / "output"
@@ -100,6 +101,21 @@ TEMPLATE = """
   .btn-red { background: var(--red); color: #fff; }
   .btn-muted { background: var(--border); color: var(--text); }
   .btn-sm { padding: 6px 14px; font-size: 0.8rem; }
+  .icon-btn { width: 34px; height: 34px; padding: 0; display:inline-flex;
+              align-items:center; justify-content:center; border-radius:6px; }
+  .auth-pill { display:inline-flex; align-items:center; gap:8px; padding:7px 10px;
+               border:1px solid var(--border); border-radius:6px; background:var(--surface);
+               color:var(--muted); font-size:0.78rem; }
+  .auth-pill.unlocked { color:var(--green); border-color:rgba(102,187,106,0.45); }
+  .tabs { display:flex; gap:8px; margin: 18px 0 20px; border-bottom:1px solid var(--border); }
+  .tab { color:var(--muted); text-decoration:none; padding:10px 12px; border-bottom:2px solid transparent;
+         font-size:0.85rem; font-weight:700; }
+  .tab.active { color:var(--accent); border-color:var(--accent); }
+  .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+  .toggle-label { display:inline-flex; gap:8px; align-items:center; color:var(--muted);
+                  font-size:0.82rem; cursor:pointer; user-select:none; }
+  .copy-note { color:var(--green); font-size:0.8rem; opacity:0; transition:opacity 0.15s; }
+  .copy-note.show { opacity:1; }
 
   /* Status badge */
   .badge { display: inline-block; padding: 3px 10px; border-radius: 4px;
@@ -211,6 +227,20 @@ TEMPLATE = """
   /* Week P&L summary */
   .pnl-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
                  gap: 10px; margin-bottom: 20px; }
+  .pl-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:10px; margin-bottom:18px; }
+  .pl-section { background:var(--surface); border:1px solid var(--border); border-radius:8px;
+                padding:16px; margin-bottom:18px; }
+  .pl-section-title { color:var(--accent); font-weight:700; font-size:0.85rem;
+                      text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; }
+  .metric-row { display:flex; justify-content:space-between; gap:14px; padding:7px 0;
+                border-bottom:1px solid rgba(42,45,58,0.65); font-size:0.85rem; }
+  .metric-row:last-child { border-bottom:none; }
+  .bars { display:flex; align-items:flex-end; gap:7px; height:180px; padding:12px 4px 0; border-bottom:1px solid var(--border); }
+  .bar-wrap { flex:1; min-width:20px; display:flex; flex-direction:column; align-items:center; gap:6px; height:100%; justify-content:flex-end; }
+  .bar { width:100%; max-width:34px; min-height:2px; border-radius:4px 4px 0 0; }
+  .bar.neg { border-radius:0 0 4px 4px; }
+  .bar-label { color:var(--muted); font-size:0.68rem; }
+  .line-chart { width:100%; height:220px; }
 
   /* Error/info messages */
   .msg { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 0.9rem; }
@@ -318,9 +348,22 @@ TEMPLATE = """
 </head>
 <body>
 <div class="container">
-  <h1>NFL Betting Tracker</h1>
-  <p class="subtitle">{{ year }} Season &mdash; Model v5</p>
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
+    <div>
+      <h1>NFL Betting Tracker</h1>
+      <p class="subtitle">{{ year }} Season &mdash; Model v5</p>
+    </div>
+    <button type="button" id="auth-pill" class="auth-pill" onclick="unlockWrites()" title="Unlock write actions">
+      <span id="auth-icon">LOCK</span><span id="auth-text">Read-only</span>
+    </button>
+  </div>
 
+  <div class="tabs">
+    <a class="tab {{ 'active' if tab == 'week' }}" href="/?year={{ year }}&week={{ week }}&tab=week">Weekly Tracker</a>
+    <a class="tab {{ 'active' if tab == 'pnl' }}" href="/?year={{ year }}&week={{ week }}&tab=pnl&pnl_mode={{ pnl_mode }}">P&amp;L Dashboard</a>
+  </div>
+
+  {% if tab == 'week' %}
   <!-- Season Overview -->
   <div class="season-bar">
     <div class="stat-card">
@@ -347,8 +390,8 @@ TEMPLATE = """
       <div class="val">{{ summary.record }}</div>
     </div>
     <div class="stat-card">
-      <div class="label">ML / Spread</div>
-      <div class="val" style="font-size:1rem;">{{ summary.ml_record }} / {{ summary.spread_record }}</div>
+      <div class="label">ML / Spread / Total</div>
+      <div class="val" style="font-size:1rem;">{{ summary.ml_record }} / {{ summary.spread_record }} / {{ summary.total_record }}</div>
     </div>
   </div>
 
@@ -435,9 +478,22 @@ TEMPLATE = """
   </div>
   {% endif %}
 
+  <div class="toolbar">
+    <div class="stat-card" style="min-width:260px;">
+      <div class="label">Projected Profit (if all selected hit)</div>
+      <div class="val green" id="projected-profit">${{ "%.2f"|format(projected_profit) }}</div>
+    </div>
+    <label class="toggle-label">
+      <input type="checkbox" id="selected-only" onchange="applySelectedOnlyFilter()">
+      Selected Only
+    </label>
+    <button type="button" class="btn-sm btn-muted" onclick="copySelectedBets()">Copy Selected Bets</button>
+    <span id="copy-note" class="copy-note">Copied!</span>
+  </div>
+
   <div class="game-grid">
     {% for g in games %}
-    <div class="game-card">
+    <div class="game-card" data-game-card>
       <div class="matchup">Game {{ g.game_number }}: {{ g.away_team }} @ {{ g.home_team }}</div>
       <div class="scores">
         <div class="team-score">
@@ -456,7 +512,10 @@ TEMPLATE = """
         &nbsp;|&nbsp; Spread: {{ "%.1f"|format(g.predicted_spread) }}
       </div>
       {% for b in g.bets %}
-      <div class="bet-row {{ 'selected' if b.selected }}" id="row-{{ b.id }}">
+      <div class="bet-row {{ 'selected' if b.selected }}" id="row-{{ b.id }}"
+           data-bet-row data-bet-id="{{ b.id }}" data-selected="{{ 'true' if b.selected else 'false' }}"
+           data-team="{{ b.pick }}" data-type="{{ b.type }}" data-line="{{ b.get('spread_points', b.get('total_line', '')) }}"
+           data-odds="{{ b.odds }}" data-amount="{{ b.amount }}" data-pick="{{ b.pick }}">
         <div class="bet-check {{ 'on' if b.selected }}" id="check-{{ b.id }}"
              onclick="toggleBet('{{ b.id }}')">{{ 'X' if b.selected else '' }}</div>
         <div class="bet-info">
@@ -564,6 +623,14 @@ TEMPLATE = """
       Locked {{ week_data.locked_at[:16] if week_data.locked_at else '' }}
     </span>
   </div>
+  <div class="toolbar">
+    <div class="stat-card" style="min-width:260px;">
+      <div class="label">Projected Profit (if all selected hit)</div>
+      <div class="val green" id="projected-profit">${{ "%.2f"|format(projected_profit) }}</div>
+    </div>
+    <button type="button" class="btn-sm btn-muted" onclick="copySelectedBets()">Copy Selected Bets</button>
+    <span id="copy-note" class="copy-note">Copied!</span>
+  </div>
 
   <div class="game-grid">
     {% for g in games %}
@@ -582,7 +649,9 @@ TEMPLATE = """
       </div>
       {% for b in g.bets %}
         {% if b.selected %}
-        <div class="bet-row locked">
+        <div class="bet-row locked selected" data-bet-row data-bet-id="{{ b.id }}" data-selected="true"
+             data-team="{{ b.pick }}" data-type="{{ b.type }}" data-line="{{ b.get('spread_points', b.get('total_line', '')) }}"
+             data-odds="{{ b.odds }}" data-amount="{{ b.amount }}" data-pick="{{ b.pick }}">
           <div style="color:var(--blue); font-size:0.9rem; width:28px; text-align:center;">[L]</div>
           <div class="bet-info">
             <span class="bet-type">{{ b.type|upper }}</span>
@@ -636,6 +705,10 @@ TEMPLATE = """
       <div class="val">{{ week_record }}</div>
     </div>
   </div>
+  <div class="toolbar">
+    <button type="button" class="btn-sm btn-muted" onclick="copySelectedBets()">Copy Selected Bets</button>
+    <span id="copy-note" class="copy-note">Copied!</span>
+  </div>
 
   <div class="game-grid">
     {% for g in games %}
@@ -659,7 +732,9 @@ TEMPLATE = """
       {% endif %}
       {% for b in g.bets %}
         {% if b.selected %}
-        <div class="bet-row">
+        <div class="bet-row selected" data-bet-row data-bet-id="{{ b.id }}" data-selected="true"
+             data-team="{{ b.pick }}" data-type="{{ b.type }}" data-line="{{ b.get('spread_points', b.get('total_line', '')) }}"
+             data-odds="{{ b.odds }}" data-amount="{{ b.amount }}" data-pick="{{ b.pick }}">
           <span class="result-badge {{ b.result or 'skip' }}">{{ b.result or '?' }}</span>
           <div class="bet-info">
             <span class="bet-type">{{ b.type|upper }}</span>
@@ -970,40 +1045,324 @@ TEMPLATE = """
   </table>
   {% endif %}
 
+  {% else %}
+  <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:16px;">
+    <h2 style="margin:0; border:none; padding:0;">P&amp;L Dashboard</h2>
+    <form method="GET" class="toolbar" style="margin:0;">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="week" value="{{ week }}">
+      <input type="hidden" name="tab" value="pnl">
+      <label class="ctrl" style="margin:0;">
+        <span style="font-size:0.7rem; color:var(--muted); text-transform:uppercase;">Profit Calc Mode</span>
+        <select name="pnl_mode" onchange="this.form.submit()">
+          <option value="actual" {{ 'selected' if pnl_mode == 'actual' }}>Actual</option>
+          <option value="projected" {{ 'selected' if pnl_mode == 'projected' }}>Projected</option>
+        </select>
+      </label>
+    </form>
+  </div>
+
+  <div class="pl-grid">
+    <div class="stat-card"><div class="label">Total P&amp;L</div><div class="val {{ 'green' if pnl_dashboard.summary.total_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(pnl_dashboard.summary.total_pnl) }}</div></div>
+    <div class="stat-card"><div class="label">All Recommended P&amp;L</div><div class="val {{ 'green' if pnl_dashboard.summary.all_recommended_pnl >= 0 else 'red' }}">${{ "%+.2f"|format(pnl_dashboard.summary.all_recommended_pnl) }}</div></div>
+    <div class="stat-card"><div class="label">Profit Margin</div><div class="val {{ 'green' if pnl_dashboard.summary.profit_margin >= 0 else 'red' }}">{{ "%+.1f"|format(pnl_dashboard.summary.profit_margin * 100) }}%</div></div>
+    <div class="stat-card"><div class="label">Season Sharpe</div><div class="val" title="Sharpe = (mean weekly margin - 0.000769) / stdev weekly margins. Not annualized.">{{ pnl_dashboard.summary.sharpe_label }}</div></div>
+    <div class="stat-card"><div class="label">Bets Taken</div><div class="val">{{ pnl_dashboard.summary.total_bets_taken }}</div></div>
+    <div class="stat-card"><div class="label">Amount Bet</div><div class="val">${{ "%.2f"|format(pnl_dashboard.summary.total_amount_bet) }}</div></div>
+    <div class="stat-card"><div class="label">Avg Weekly Margin</div><div class="val {{ 'green' if pnl_dashboard.summary.average_weekly_margin >= 0 else 'red' }}">{{ "%+.1f"|format(pnl_dashboard.summary.average_weekly_margin * 100) }}%</div></div>
+    <div class="stat-card"><div class="label">Projected Final</div><div class="val">${{ "%.2f"|format(pnl_dashboard.projection.projected_final) if pnl_dashboard.projection else "Insufficient data" }}</div></div>
+  </div>
+
+  {% if pnl_dashboard.projection %}
+  <div class="msg msg-info">
+    End-of-season projection based on current average returns:
+    <strong>${{ "%.2f"|format(pnl_dashboard.projection.projected_final) }}</strong>
+    with ±1 stdev band
+    <strong>${{ "%.2f"|format(pnl_dashboard.projection.lower_band) }}</strong> to
+    <strong>${{ "%.2f"|format(pnl_dashboard.projection.upper_band) }}</strong>.
+  </div>
+  {% endif %}
+
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:18px;">
+    <div class="pl-section">
+      <div class="pl-section-title">Week-over-Week Net Profit</div>
+      <div class="bars">
+        {% for row in pnl_dashboard.weeks %}
+        <div class="bar-wrap" title="Week {{ row.week }}: {{ '%+.2f'|format(row.week_net_profit) }}">
+          <div class="bar {{ 'neg' if row.week_net_profit < 0 }}" style="height:{{ row.bar_height }}%; background:{{ 'var(--green)' if row.week_net_profit >= 0 else 'var(--red)' }};"></div>
+          <div class="bar-label">W{{ row.week }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="pl-section">
+      <div class="pl-section-title">Profit By Bet Type</div>
+      {% for t in ['ml', 'spread', 'total'] %}
+      {% set m = pnl_dashboard.by_type[t] %}
+      <div class="metric-row">
+        <span>{{ t|upper }}</span>
+        <strong class="{{ 'green' if m.profit >= 0 else 'red' }}">${{ "%+.2f"|format(m.profit) }}</strong>
+      </div>
+      <div class="metric-row">
+        <span>Prediction hit / Bet hit v2</span>
+        <span>{{ m.prediction_hit_label }} / {{ m.bet_hit_label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="pl-section">
+    <div class="pl-section-title">Cumulative Bankroll Curve</div>
+    <canvas id="pnlDashboardBankroll" class="line-chart"></canvas>
+  </div>
+
+  <div class="pl-section">
+    <div class="pl-section-title">Weekly P&amp;L Table</div>
+    {% if pnl_dashboard.weeks %}
+    <table>
+      <thead>
+        <tr>
+          <th>Week</th><th class="num">Margin</th><th class="num">Net Profit</th>
+          <th class="num">ML</th><th class="num">Spread</th><th class="num">Total</th>
+          <th class="num">ML v2</th><th class="num">Spread v2</th><th class="num">Total v2</th><th class="num">Sharpe</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in pnl_dashboard.weeks %}
+        <tr>
+          <td>Week {{ row.week }}</td>
+          <td class="num {{ 'green' if row.profit_margin >= 0 else 'red' }}">{{ "%+.1f"|format(row.profit_margin * 100) }}%</td>
+          <td class="num {{ 'green' if row.week_net_profit >= 0 else 'red' }}">${{ "%+.2f"|format(row.week_net_profit) }}</td>
+          <td class="num {{ 'green' if row.ml_profit >= 0 else 'red' }}">${{ "%+.2f"|format(row.ml_profit) }}</td>
+          <td class="num {{ 'green' if row.spread_profit >= 0 else 'red' }}">${{ "%+.2f"|format(row.spread_profit) }}</td>
+          <td class="num {{ 'green' if row.total_profit >= 0 else 'red' }}">${{ "%+.2f"|format(row.total_profit) }}</td>
+          <td class="num">{{ row.ml_hit_rate_v2_label }}</td>
+          <td class="num">{{ row.spread_hit_rate_v2_label }}</td>
+          <td class="num">{{ row.total_hit_rate_v2_label }}</td>
+          <td class="num">{{ row.sharpe_label }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="msg msg-info">No historical week data yet.</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
 </div>
 
 <script>
 const YEAR = {{ year }};
 const WEEK = {{ week }};
+const STATUS = {{ status|tojson }};
+const SERVER_UNLOCKED = {{ 'true' if is_write_unlocked else 'false' }};
+const STORE_KEY = 'nfl-bets-' + YEAR + '-week-' + WEEK;
+
+function getSelectedIdsFromDom() {
+    return Array.from(document.querySelectorAll('[data-bet-row]'))
+        .filter(row => row.dataset.selected === 'true')
+        .map(row => row.dataset.betId);
+}
+
+function persistWeekState() {
+    var payload = {selected_ids: getSelectedIdsFromDom(), status: STATUS, locked: STATUS === 'locked' || STATUS === 'graded'};
+    localStorage.setItem(STORE_KEY, JSON.stringify(payload));
+}
+
+function updateAuthUI() {
+    var unlocked = sessionStorage.getItem('nfl-write-unlocked') === 'true' || SERVER_UNLOCKED;
+    var pill = document.getElementById('auth-pill');
+    var icon = document.getElementById('auth-icon');
+    var text = document.getElementById('auth-text');
+    if (!pill) return;
+    pill.classList.toggle('unlocked', unlocked);
+    icon.textContent = unlocked ? 'UNLOCK' : 'LOCK';
+    text.textContent = unlocked ? 'Write mode' : 'Read-only';
+    if (SERVER_UNLOCKED) sessionStorage.setItem('nfl-write-unlocked', 'true');
+}
+
+function unlockWrites() {
+    return ensureWriteAuth(true);
+}
+
+function ensureWriteAuth(forcePrompt) {
+    if (!forcePrompt && (SERVER_UNLOCKED || sessionStorage.getItem('nfl-write-unlocked') === 'true')) {
+        return Promise.resolve(true);
+    }
+    var pwd = window.prompt('Enter write password');
+    if (pwd === null) return Promise.resolve(false);
+    return fetch('/auth', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({password: pwd})
+    }).then(function(r) {
+        if (!r.ok) throw new Error('Incorrect password');
+        return r.json();
+    }).then(function(data) {
+        if (data.ok) {
+            sessionStorage.setItem('nfl-write-unlocked', 'true');
+            updateAuthUI();
+            return true;
+        }
+        return false;
+    }).catch(function(err) {
+        alert(err.message || 'Could not unlock write actions');
+        sessionStorage.removeItem('nfl-write-unlocked');
+        updateAuthUI();
+        return false;
+    });
+}
+
+function bindProtectedForms() {
+    document.querySelectorAll('form[method="POST"]').forEach(function(form) {
+        form.addEventListener('submit', function(e) {
+            if (form.dataset.authSubmitting === 'true') return;
+            e.preventDefault();
+            ensureWriteAuth(false).then(function(ok) {
+                if (!ok) return;
+                form.dataset.authSubmitting = 'true';
+                form.submit();
+            });
+        });
+    });
+}
+
+function profitFromOdds(amount, odds) {
+    amount = Number(amount) || 0;
+    odds = Number(odds) || -110;
+    return odds < 0 ? amount * (100 / Math.abs(odds)) : amount * (odds / 100);
+}
+
+function recalcProjectedProfit() {
+    var total = 0;
+    document.querySelectorAll('[data-bet-row]').forEach(function(row) {
+        if (row.dataset.selected === 'true') {
+            total += profitFromOdds(row.dataset.amount, row.dataset.odds);
+        }
+    });
+    var el = document.getElementById('projected-profit');
+    if (el) el.textContent = '$' + total.toFixed(2);
+}
+
+function applySelectedOnlyFilter() {
+    var selectedOnly = document.getElementById('selected-only');
+    selectedOnly = selectedOnly && selectedOnly.checked;
+    document.querySelectorAll('[data-bet-row]').forEach(function(row) {
+        row.style.display = (!selectedOnly || row.dataset.selected === 'true') ? '' : 'none';
+    });
+    document.querySelectorAll('[data-game-card]').forEach(function(card) {
+        var visibleRows = Array.from(card.querySelectorAll('[data-bet-row]'))
+            .filter(function(row) { return row.style.display !== 'none'; });
+        card.style.display = (!selectedOnly || visibleRows.length > 0) ? '' : 'none';
+    });
+}
+
+function copySelectedBets() {
+    var lines = Array.from(document.querySelectorAll('[data-bet-row]'))
+        .filter(function(row) { return row.dataset.selected === 'true'; })
+        .map(function(row) {
+            var type = row.dataset.type === 'spread' ? 'spread' : (row.dataset.type === 'total' ? 'total' : 'ML');
+            var line = row.dataset.line ? ' ' + row.dataset.line : '';
+            return row.dataset.pick + ' | ' + type + line + ' | odds ' + signedOdds(row.dataset.odds);
+        });
+    if (!lines.length) {
+        alert('No selected bets to copy.');
+        return;
+    }
+    navigator.clipboard.writeText(lines.join('\\n')).then(function() {
+        var note = document.getElementById('copy-note');
+        if (note) {
+            note.classList.add('show');
+            setTimeout(function() { note.classList.remove('show'); }, 1300);
+        }
+    });
+}
+
+function signedOdds(odds) {
+    odds = Number(odds) || 0;
+    return odds > 0 ? '+' + odds : String(odds);
+}
+
+function rehydrateSelectionFromLocalStorage() {
+    if (STATUS !== 'pending') {
+        persistWeekState();
+        return;
+    }
+    var savedRaw = localStorage.getItem(STORE_KEY);
+    if (!savedRaw) {
+        persistWeekState();
+        return;
+    }
+    try {
+        var saved = JSON.parse(savedRaw);
+        if (!Array.isArray(saved.selected_ids)) return;
+        var current = getSelectedIdsFromDom().sort().join('|');
+        var stored = saved.selected_ids.slice().sort().join('|');
+        if (current === stored) return;
+        ensureWriteAuth(false).then(function(ok) {
+            if (!ok) return;
+            fetch('/sync-selection', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({year: YEAR, week: WEEK, selected_ids: saved.selected_ids})
+            }).then(function(r) { return r.json(); }).then(function(data) {
+                if (data.ok) applyBetState(data);
+            });
+        });
+    } catch (e) {
+        localStorage.removeItem(STORE_KEY);
+    }
+}
+
+function applyBetState(data) {
+    data.bets.forEach(b => {
+        var check = document.getElementById('check-' + b.id);
+        var row = document.getElementById('row-' + b.id);
+        var amt = document.getElementById('amt-' + b.id);
+        if (row) {
+            row.dataset.selected = b.selected ? 'true' : 'false';
+            row.dataset.amount = Number(b.amount || 0).toFixed(2);
+            row.className = b.selected ? 'bet-row selected' : 'bet-row';
+        }
+        if (check) {
+            check.className = b.selected ? 'bet-check on' : 'bet-check';
+            check.innerHTML = b.selected ? 'X' : '';
+        }
+        if (amt) amt.textContent = '$' + Number(b.amount || 0).toFixed(2);
+    });
+    var wagered = document.getElementById('total-wagered');
+    var count = document.getElementById('sel-count');
+    if (wagered) wagered.textContent = '$' + data.total_wagered.toFixed(2);
+    if (count) count.textContent = data.selected_count;
+    if (typeof data.projected_profit === 'number') {
+        var pp = document.getElementById('projected-profit');
+        if (pp) pp.textContent = '$' + data.projected_profit.toFixed(2);
+    } else {
+        recalcProjectedProfit();
+    }
+    applySelectedOnlyFilter();
+    persistWeekState();
+}
 
 function toggleBet(betId) {
+    ensureWriteAuth(false).then(function(ok) {
+        if (!ok) return;
     fetch('/toggle', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({year: YEAR, week: WEEK, bet_id: betId})
     })
-    .then(r => r.json())
+    .then(r => {
+        if (r.status === 401) throw new Error('Password required');
+        return r.json();
+    })
     .then(data => {
         if (!data.ok) return;
-        data.bets.forEach(b => {
-            var check = document.getElementById('check-' + b.id);
-            var row = document.getElementById('row-' + b.id);
-            var amt = document.getElementById('amt-' + b.id);
-            if (check) {
-                if (b.selected) {
-                    check.className = 'bet-check on';
-                    check.innerHTML = 'X';
-                    if (row) row.className = 'bet-row selected';
-                } else {
-                    check.className = 'bet-check';
-                    check.innerHTML = '';
-                    if (row) row.className = 'bet-row';
-                }
-            }
-            if (amt) amt.textContent = '$' + b.amount.toFixed(2);
-        });
-        document.getElementById('total-wagered').textContent = '$' + data.total_wagered.toFixed(2);
-        document.getElementById('sel-count').textContent = data.selected_count;
+        applyBetState(data);
+    }).catch(function(err) {
+        alert(err.message || 'Could not update bet');
+    });
     });
 }
 
@@ -1017,6 +1376,67 @@ function toggleStats(e, statsId) {
 
 function toggleTeam(row) {
     row.classList.toggle('expanded');
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    updateAuthUI();
+    bindProtectedForms();
+    rehydrateSelectionFromLocalStorage();
+    recalcProjectedProfit();
+    drawPnlDashboardCurve();
+});
+
+function drawPnlDashboardCurve() {
+    var canvas = document.getElementById('pnlDashboardBankroll');
+    if (!canvas) return;
+    var pts = [
+        {% for p in pnl_dashboard.bankroll_points %}
+        {week: {{ p.week }}, bankroll: {{ p.bankroll }} },
+        {% endfor %}
+    ];
+    if (!pts.length) return;
+    var dpr = window.devicePixelRatio || 1;
+    var rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    var ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    var W = rect.width, H = rect.height;
+    var pad = {t: 12, r: 18, b: 32, l: 64};
+    var cW = W - pad.l - pad.r, cH = H - pad.t - pad.b;
+    var yMin = Math.min.apply(null, pts.map(function(p){return p.bankroll}));
+    var yMax = Math.max.apply(null, pts.map(function(p){return p.bankroll}));
+    var yPad = Math.max((yMax - yMin) * 0.15, 50);
+    yMin -= yPad; yMax += yPad;
+    if (yMin === yMax) yMax += 100;
+    function xPos(i) { return pad.l + (pts.length === 1 ? 0 : i / (pts.length - 1)) * cW; }
+    function yPos(v) { return pad.t + cH - ((v - yMin) / (yMax - yMin)) * cH; }
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillStyle = '#888';
+    ctx.font = '11px monospace';
+    for (var i = 0; i <= 4; i++) {
+        var y = pad.t + cH / 4 * i;
+        var val = yMax - (yMax - yMin) / 4 * i;
+        ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+        ctx.textAlign = 'right'; ctx.fillText('$' + Math.round(val), pad.l - 8, y + 4);
+    }
+    ctx.strokeStyle = '#4fc3f7';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    pts.forEach(function(p, i) {
+        var x = xPos(i), y = yPos(p.bankroll);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    pts.forEach(function(p, i) {
+        var x = xPos(i), y = yPos(p.bankroll);
+        ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = p.bankroll >= pts[0].bankroll ? '#66bb6a' : '#ef5350';
+        ctx.fill();
+        ctx.fillStyle = '#888'; ctx.textAlign = 'center'; ctx.font = '10px monospace';
+        ctx.fillText(p.week === 0 ? 'Start' : 'W' + p.week, x, H - pad.b + 18);
+    });
 }
 
 // ─── Charts ───
@@ -1336,12 +1756,284 @@ def _get_graded_weeks(tracker: SeasonTracker) -> list:
     return weeks
 
 
+def _configured_password() -> str:
+    """Return the dashboard write password from deployment env."""
+    return (
+        os.environ.get("APP_PASSWORD")
+        or os.environ.get("VITE_APP_PASSWORD")
+        or os.environ.get("NEXT_PUBLIC_APP_PASSWORD")
+        or ""
+    )
+
+
+def _is_write_unlocked() -> bool:
+    password = _configured_password()
+    return not password or bool(session.get("write_unlocked"))
+
+
+def _require_write_auth_json():
+    if _is_write_unlocked():
+        return None
+    return jsonify({"ok": False, "auth_required": True, "error": "Password required"}), 401
+
+
+def _require_write_auth_redirect(year: int, week: int):
+    if _is_write_unlocked():
+        return None
+    return redirect(f"/?year={year}&week={week}&error=Password+required+for+write+actions")
+
+
+def _moneyline_profit(amount: float, odds: int) -> float:
+    return SeasonTracker.win_profit(amount, odds)
+
+
+def _projected_profit(bets: list) -> float:
+    return round(sum(
+        _moneyline_profit(float(b.get("amount", 0) or 0), int(b.get("odds", -110) or -110))
+        for b in bets if b.get("selected")
+    ), 2)
+
+
+def _label_pct(value):
+    if value is None:
+        return "N/A"
+    return f"{value * 100:.1f}%"
+
+
+def _label_num(value):
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "Insufficient data"
+    return f"{value:.2f}"
+
+
+def _mean(values: list) -> float:
+    return float(np.mean(values)) if values else 0.0
+
+
+def _stdev(values: list):
+    if len(values) < 2:
+        return None
+    return float(np.std(values, ddof=1))
+
+
+def _game_results_from_week(week_data: dict) -> dict:
+    results = {}
+    for pred in week_data.get("predictions", []):
+        if pred.get("actual_away_score") is None or pred.get("actual_home_score") is None:
+            continue
+        results[pred["game_number"]] = {
+            "away_score": pred["actual_away_score"],
+            "home_score": pred["actual_home_score"],
+        }
+    return results
+
+
+def _allocate_bet_amounts(bets: list, selected_ids: set, bankroll: float, bet_pct: int) -> list:
+    pool = bankroll * bet_pct / 100
+    total_value = sum(max(0, float(b.get("value", 0) or 0)) for b in bets if b["id"] in selected_ids)
+    allocated = []
+    for bet in bets:
+        b = dict(bet)
+        b["selected"] = b["id"] in selected_ids
+        if b["selected"] and total_value > 0:
+            b["amount"] = round(max(0, float(b.get("value", 0) or 0)) / total_value * pool, 2)
+        else:
+            b["amount"] = 0.0
+        allocated.append(b)
+    return allocated
+
+
+def _week_pnl_row(week_num: int, week_data: dict, week_bankroll: float, mode: str,
+                  selected_ids: set = None) -> dict:
+    selected_ids = selected_ids or {b["id"] for b in week_data.get("bets", []) if b.get("selected")}
+    bets = _allocate_bet_amounts(
+        week_data.get("bets", []),
+        selected_ids,
+        week_bankroll,
+        int(week_data.get("bet_pct", 100) or 100),
+    )
+    game_results = _game_results_from_week(week_data)
+    use_projected = mode == "projected"
+
+    profits = {"ml": 0.0, "spread": 0.0, "total": 0.0}
+    prediction_hits = {t: [0, 0] for t in profits}
+    bet_hits = {t: [0, 0] for t in profits}
+    amount_bet = 0.0
+    bets_taken = 0
+
+    for bet in bets:
+        btype = bet.get("type")
+        if btype not in profits:
+            continue
+
+        result = None
+        game_result = game_results.get(bet["game_number"])
+        if game_result:
+            result = SeasonTracker.grade_bet_result(bet, game_result)
+            prediction_hits[btype][1] += 1
+            if result == "win":
+                prediction_hits[btype][0] += 1
+
+        if not bet.get("selected"):
+            continue
+
+        amount_bet += float(bet.get("amount", 0) or 0)
+        bets_taken += 1
+        if use_projected:
+            pnl = SeasonTracker.pnl_for_bet(bet, "win", projected=True)
+            result_for_hit = "win"
+        elif not game_result:
+            pnl = 0.0
+            result_for_hit = None
+        else:
+            pnl = SeasonTracker.pnl_for_bet(bet, result or "loss")
+            result_for_hit = result
+
+        profits[btype] += pnl
+        if result_for_hit in ("win", "loss", "push"):
+            bet_hits[btype][1] += 1
+            if result_for_hit == "win":
+                bet_hits[btype][0] += 1
+
+    week_net = sum(profits.values())
+    amount_bet = round(amount_bet, 2)
+    margin = week_net / amount_bet if amount_bet > 0 else 0.0
+
+    row = {
+        "week": week_num,
+        "ml_profit": round(profits["ml"], 2),
+        "spread_profit": round(profits["spread"], 2),
+        "total_profit": round(profits["total"], 2),
+        "week_net_profit": round(week_net, 2),
+        "amount_bet": amount_bet,
+        "profit_margin": margin,
+        "bets_taken": bets_taken,
+        "ending_bankroll": round(week_bankroll + week_net, 2),
+    }
+
+    for btype in ("ml", "spread", "total"):
+        ph_w, ph_t = prediction_hits[btype]
+        bh_w, bh_t = bet_hits[btype]
+        row[f"{btype}_hit_rate"] = ph_w / ph_t if ph_t else None
+        row[f"{btype}_hit_rate_v2"] = bh_w / bh_t if bh_t else None
+        row[f"{btype}_hit_rate_v2_label"] = _label_pct(row[f"{btype}_hit_rate_v2"])
+
+    return row
+
+
+def _build_pnl_dashboard(tracker: SeasonTracker, mode: str) -> dict:
+    starting = float(tracker.starting_bankroll)
+    rows = []
+    bankroll = starting
+    all_rec_bankroll = starting
+    all_rec_pnl_total = 0.0
+
+    for wk_str in sorted(tracker.data["weeks"].keys(), key=int):
+        week_data = tracker.data["weeks"][wk_str]
+        if week_data.get("status") not in ("pending", "locked", "graded"):
+            continue
+        if mode == "actual" and week_data.get("status") != "graded":
+            continue
+
+        week_num = int(wk_str)
+        calc_mode = "actual" if mode == "actual" and week_data.get("status") == "graded" else mode
+        row = _week_pnl_row(week_num, week_data, bankroll, calc_mode)
+        bankroll = row["ending_bankroll"]
+        rows.append(row)
+
+        rec_ids = {b["id"] for b in week_data.get("bets", [])
+                   if b.get("recommended") and float(b.get("value", 0) or 0) > 0}
+        if week_data.get("status") == "graded" and rec_ids:
+            rec_row = _week_pnl_row(week_num, week_data, all_rec_bankroll, "actual", rec_ids)
+            all_rec_bankroll = rec_row["ending_bankroll"]
+            all_rec_pnl_total += rec_row["week_net_profit"]
+
+    margins = [r["profit_margin"] for r in rows]
+    total_pnl = round(sum(r["week_net_profit"] for r in rows), 2)
+    total_amount = round(sum(r["amount_bet"] for r in rows), 2)
+    stdev = _stdev(margins)
+    sharpe = ((np.mean(margins) - 0.000769) / stdev) if stdev and stdev > 0 else None
+
+    by_type = {}
+    for btype in ("ml", "spread", "total"):
+        weekly_pred = [r[f"{btype}_hit_rate"] for r in rows if r[f"{btype}_hit_rate"] is not None]
+        weekly_bet = [r[f"{btype}_hit_rate_v2"] for r in rows if r[f"{btype}_hit_rate_v2"] is not None]
+        by_type[btype] = {
+            "profit": round(sum(r[f"{btype}_profit"] for r in rows), 2),
+            "prediction_hit_label": _label_pct(_mean(weekly_pred) if weekly_pred else None),
+            "bet_hit_label": _label_pct(_mean(weekly_bet) if weekly_bet else None),
+        }
+
+    expanding = []
+    for idx, row in enumerate(rows, 1):
+        window = margins[:idx]
+        sd = _stdev(window)
+        row["sharpe"] = ((np.mean(window) - 0.000769) / sd) if sd and sd > 0 else None
+        row["sharpe_label"] = _label_num(row["sharpe"])
+        expanding.append(row["sharpe"])
+
+    max_abs = max([abs(r["week_net_profit"]) for r in rows] + [1])
+    for row in rows:
+        row["bar_height"] = max(3, abs(row["week_net_profit"]) / max_abs * 100)
+
+    projection = None
+    if margins and stdev is not None:
+        completed = len(rows)
+        remaining = max(0, 18 - completed)
+        current_balance = starting + total_pnl
+        expected_margin = _mean(margins)
+        projection = {
+            "completed_weeks": completed,
+            "remaining_weeks": remaining,
+            "current_balance": current_balance,
+            "expected_margin": expected_margin,
+            "margin_stdev": stdev,
+            "projected_final": current_balance * ((1 + expected_margin) ** remaining),
+            "upper_band": current_balance * ((1 + expected_margin + stdev) ** remaining),
+            "lower_band": current_balance * ((1 + expected_margin - stdev) ** remaining),
+        }
+
+    return {
+        "weeks": rows,
+        "by_type": by_type,
+        "bankroll_points": [{"week": 0, "bankroll": starting}]
+        + [{"week": r["week"], "bankroll": r["ending_bankroll"]} for r in rows],
+        "projection": projection,
+        "summary": {
+            "total_pnl": total_pnl,
+            "profit_margin": total_pnl / starting if starting > 0 else 0.0,
+            "total_bets_taken": sum(r["bets_taken"] for r in rows),
+            "total_amount_bet": total_amount,
+            "average_weekly_margin": _mean(margins),
+            "sharpe": sharpe,
+            "sharpe_label": _label_num(sharpe),
+            "all_recommended_pnl": round(all_rec_pnl_total, 2),
+        },
+    }
+
+
 # ─── Routes ──────────────────────────────────────────────────────────────────
+
+@app.route("/auth", methods=["POST"])
+def auth_write_actions():
+    data = request.get_json(silent=True) or {}
+    password = _configured_password()
+    if not password or data.get("password") == password:
+        session["write_unlocked"] = True
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Incorrect password"}), 401
+
 
 @app.route("/")
 def index():
     year = request.args.get("year", 2025, type=int)
     week = request.args.get("week", 1, type=int)
+    tab = request.args.get("tab", "week")
+    pnl_mode = request.args.get("pnl_mode", "actual")
+    if tab not in ("week", "pnl"):
+        tab = "week"
+    if pnl_mode not in ("actual", "projected"):
+        pnl_mode = "actual"
 
     tracker = SeasonTracker(year)
     status = tracker.week_status(week)
@@ -1355,6 +2047,7 @@ def index():
 
     selected_count = sum(1 for b in week_data.get("bets", []) if b.get("selected"))
     total_wagered = sum(b["amount"] for b in week_data.get("bets", []) if b.get("selected"))
+    projected_profit = _projected_profit(week_data.get("bets", []))
 
     # Week record for graded weeks
     week_record = ""
@@ -1367,6 +2060,7 @@ def index():
 
     graded_weeks = _get_graded_weeks(tracker)
     projection = tracker.get_projection(week)
+    pnl_dashboard = _build_pnl_dashboard(tracker, pnl_mode)
 
     error = request.args.get("error")
     success = request.args.get("success")
@@ -1374,13 +2068,17 @@ def index():
     return render_template_string(
         TEMPLATE,
         year=year, week=week, status=status,
+        tab=tab, pnl_mode=pnl_mode,
         week_data=week_data, summary=summary,
         week_statuses=week_statuses, years=years,
         games=games, team_stats=team_stats,
         selected_count=selected_count, total_wagered=total_wagered,
         week_record=week_record, graded_weeks=graded_weeks,
+        projected_profit=projected_profit,
         bankroll_locked=tracker.has_any_locked(),
         projection=projection,
+        pnl_dashboard=pnl_dashboard,
+        is_write_unlocked=_is_write_unlocked(),
         error=error, success=success,
     )
 
@@ -1391,6 +2089,10 @@ def run_model():
     week = request.form.get("week", 1, type=int)
     bankroll = request.form.get("bankroll", 1000, type=float)
     bet_pct = request.form.get("bet_pct", 100, type=int)
+
+    auth_redirect = _require_write_auth_redirect(year, week)
+    if auth_redirect:
+        return auth_redirect
 
     tracker = SeasonTracker(year)
 
@@ -1413,8 +2115,10 @@ def run_model():
     # Get model recommendations
     ml_bets = [p for p in predictions if p['ml_bet'] == 'bet']
     spread_bets = [p for p in predictions if p['spread_bet'] == 'bet']
+    total_bets = [p for p in predictions if p.get('total_bet') == 'bet']
     total_value = (sum(max(0, p['ml_value']) for p in ml_bets) +
-                   sum(max(0, p['spread_value']) for p in spread_bets))
+                   sum(max(0, p['spread_value']) for p in spread_bets) +
+                   sum(max(0, p.get('total_value', 0)) for p in total_bets))
 
     if total_value > 0:
         for p in predictions:
@@ -1426,6 +2130,10 @@ def run_model():
                 p['spread_bet_amount'] = max(0, p['spread_value']) / total_value * pool
             else:
                 p['spread_bet_amount'] = 0
+            if p.get('total_bet') == 'bet':
+                p['total_bet_amount'] = max(0, p.get('total_value', 0)) / total_value * pool
+            else:
+                p['total_bet_amount'] = 0
 
     tracker.init_week(week, predictions, team_stats, bet_pct,
                       turnover_slopes=turnover_slopes, avg_sow=avg_sow)
@@ -1446,6 +2154,10 @@ def run_projection():
     """
     year = request.form.get("year", 2025, type=int)
     week = request.form.get("week", 1, type=int)
+
+    auth_redirect = _require_write_auth_redirect(year, week)
+    if auth_redirect:
+        return auth_redirect
 
     tracker = SeasonTracker(year)
     week_data = tracker.get_week(week) or {}
@@ -1525,6 +2237,10 @@ def run_mirofish():
     year = request.form.get("year", 2025, type=int)
     week = request.form.get("week", 1, type=int)
 
+    auth_redirect = _require_write_auth_redirect(year, week)
+    if auth_redirect:
+        return auth_redirect
+
     tracker = SeasonTracker(year)
     week_data = tracker.get_week(week)
 
@@ -1559,6 +2275,10 @@ def run_mirofish():
 
 @app.route("/toggle", methods=["POST"])
 def toggle_bet():
+    auth_error = _require_write_auth_json()
+    if auth_error:
+        return auth_error
+
     data = request.get_json()
     year = data.get("year", 2025)
     week = data.get("week", 1)
@@ -1576,6 +2296,32 @@ def toggle_bet():
         "bets": bets,
         "total_wagered": sum(b["amount"] for b in selected),
         "selected_count": len(selected),
+        "projected_profit": _projected_profit(bets),
+    })
+
+
+@app.route("/sync-selection", methods=["POST"])
+def sync_selection():
+    auth_error = _require_write_auth_json()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json()
+    year = data.get("year", 2025)
+    week = data.get("week", 1)
+    selected_ids = data.get("selected_ids", [])
+
+    tracker = SeasonTracker(year)
+    ok = tracker.set_selected_bets(week, selected_ids)
+    week_data = tracker.get_week(week) or {"bets": []}
+    bets = week_data.get("bets", [])
+    selected = [b for b in bets if b.get("selected")]
+    return jsonify({
+        "ok": ok,
+        "bets": bets,
+        "total_wagered": sum(b["amount"] for b in selected),
+        "selected_count": len(selected),
+        "projected_profit": _projected_profit(bets),
     })
 
 
@@ -1583,6 +2329,10 @@ def toggle_bet():
 def lock_bets():
     year = request.form.get("year", 2025, type=int)
     week = request.form.get("week", 1, type=int)
+
+    auth_redirect = _require_write_auth_redirect(year, week)
+    if auth_redirect:
+        return auth_redirect
 
     tracker = SeasonTracker(year)
 
@@ -1602,6 +2352,10 @@ def lock_bets():
 def grade_week():
     year = request.form.get("year", 2025, type=int)
     week = request.form.get("week", 1, type=int)
+
+    auth_redirect = _require_write_auth_redirect(year, week)
+    if auth_redirect:
+        return auth_redirect
 
     tracker = SeasonTracker(year)
     week_data = tracker.get_week(week)

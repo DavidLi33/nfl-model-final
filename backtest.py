@@ -257,7 +257,11 @@ def _calculate_week_pnl(preds: pd.DataFrame) -> float:
         if row['total_bet'] == 'bet' and row['total_correct']:
             amt = row['total_bet_amount']
             if row['total_correct'] == 'yes':
-                pnl += amt * (100 / 110)
+                odds = row.get('total_odds', -110) or -110
+                if odds < 0:
+                    pnl += amt * (100 / abs(odds))
+                else:
+                    pnl += amt * (odds / 100)
             else:
                 pnl -= amt
 

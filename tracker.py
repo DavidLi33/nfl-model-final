@@ -130,6 +130,27 @@ class SeasonTracker:
                 "pnl": 0.0,
             })
 
+            total_side = str(pred.get("ou_side", "")).lower()
+            total_line = float(pred.get("total_line", 0) or 0)
+            bets.append({
+                "id": f"{pred['game_number']}_total",
+                "game_number": pred["game_number"],
+                "away_team": pred["away_team"],
+                "home_team": pred["home_team"],
+                "type": "total",
+                "pick": f"{total_side.upper()} {total_line:g}",
+                "total_side": total_side,
+                "total_line": total_line,
+                "odds": int(pred.get("total_odds", -110) or -110),
+                "amount": round(float(pred.get("total_bet_amount", 0) or 0), 2),
+                "recommended": pred.get("total_bet") == "bet",
+                "selected": pred.get("total_bet") == "bet",
+                "prob": round(float(pred.get("total_prob", 0) or 0), 4),
+                "value": round(float(pred.get("total_value", 0) or 0), 4),
+                "result": None,
+                "pnl": 0.0,
+            })
+
         # Clean predictions for JSON serialization
         clean_preds = []
         for p in predictions:
@@ -205,6 +226,25 @@ class SeasonTracker:
         self.save()
         return True
 
+    def set_selected_bets(self, week: int, selected_ids: List[str]) -> bool:
+        """Replace pending-week selections with an exact list of selected bet ids."""
+        wk_str = str(week)
+        wk_data = self.data["weeks"].get(wk_str)
+        if not wk_data or wk_data["status"] != "pending":
+            return False
+
+        selected = set(selected_ids)
+        valid_ids = {b["id"] for b in wk_data["bets"]}
+        if not selected.issubset(valid_ids):
+            return False
+
+        for bet in wk_data["bets"]:
+            bet["selected"] = bet["id"] in selected
+
+        self._recalculate_amounts(wk_str)
+        self.save()
+        return True
+
     def _recalculate_amounts(self, wk_str: str):
         """Redistribute bankroll among selected bets proportionally by value."""
         wk_data = self.data["weeks"][wk_str]
@@ -268,6 +308,62 @@ class SeasonTracker:
         self.save()
         return True
 
+    @staticmethod
+    def win_profit(amount: float, odds: int) -> float:
+        """Return profit, excluding returned stake, for a winning bet."""
+        if odds < 0:
+            return amount * (100 / abs(odds))
+        return amount * (odds / 100)
+
+    @staticmethod
+    def grade_bet_result(bet: dict, game_result: dict) -> str:
+        """Return win/loss/push for one bet against one completed game."""
+        a_score = game_result["away_score"]
+        h_score = game_result["home_score"]
+
+        if bet["type"] == "ml":
+            if a_score == h_score:
+                return "push"
+            actual_winner = bet["away_team"] if a_score > h_score else bet["home_team"]
+            return "win" if bet["pick"] == actual_winner else "loss"
+
+        if bet["type"] == "spread":
+            st = bet["spread_team"]
+            sp = bet["spread_points"]
+            t_score = a_score if st == bet["away_team"] else h_score
+            o_score = h_score if st == bet["away_team"] else a_score
+            margin = t_score - o_score + sp
+            if margin > 0:
+                return "win"
+            if margin == 0:
+                return "push"
+            return "loss"
+
+        if bet["type"] == "total":
+            total_points = a_score + h_score
+            line = float(bet.get("total_line", 0) or 0)
+            if total_points == line:
+                return "push"
+            side = str(bet.get("total_side", "")).lower()
+            if side == "over":
+                return "win" if total_points > line else "loss"
+            return "win" if total_points < line else "loss"
+
+        return "loss"
+
+    @classmethod
+    def pnl_for_bet(cls, bet: dict, result: str, projected: bool = False) -> float:
+        """Return P&L for one bet using actual result or projected-win mode."""
+        amount = float(bet.get("amount", 0) or 0)
+        odds = int(bet.get("odds", -110) or -110)
+        if projected or result == "win":
+            return round(cls.win_profit(amount, odds), 2)
+        if result == "push":
+            return 0.0
+        if result == "loss":
+            return round(-amount, 2)
+        return 0.0
+
     def grade_week(self, week: int, game_results: Dict[int, dict]) -> bool:
         """Grade a week's bets with actual results.
 
@@ -291,52 +387,9 @@ class SeasonTracker:
             if not result:
                 continue
 
-            a_score = result["away_score"]
-            h_score = result["home_score"]
             graded_any = True
-
-            if bet["type"] == "ml":
-                if a_score == h_score:
-                    bet["result"] = "push"
-                    bet["pnl"] = 0.0
-                else:
-                    actual_winner = (bet["away_team"] if a_score > h_score
-                                     else bet["home_team"])
-                    if bet["pick"] == actual_winner:
-                        bet["result"] = "win"
-                        odds = bet["odds"]
-                        if odds < 0:
-                            bet["pnl"] = round(
-                                bet["amount"] * (100 / abs(odds)), 2)
-                        else:
-                            bet["pnl"] = round(
-                                bet["amount"] * (odds / 100), 2)
-                    else:
-                        bet["result"] = "loss"
-                        bet["pnl"] = round(-bet["amount"], 2)
-
-            elif bet["type"] == "spread":
-                st = bet["spread_team"]
-                sp = bet["spread_points"]
-                t_score = a_score if st == bet["away_team"] else h_score
-                o_score = h_score if st == bet["away_team"] else a_score
-                margin = t_score - o_score + sp
-
-                if margin > 0:
-                    bet["result"] = "win"
-                    odds = bet["odds"]
-                    if odds < 0:
-                        bet["pnl"] = round(
-                            bet["amount"] * (100 / abs(odds)), 2)
-                    else:
-                        bet["pnl"] = round(
-                            bet["amount"] * (odds / 100), 2)
-                elif margin == 0:
-                    bet["result"] = "push"
-                    bet["pnl"] = 0.0
-                else:
-                    bet["result"] = "loss"
-                    bet["pnl"] = round(-bet["amount"], 2)
+            bet["result"] = self.grade_bet_result(bet, result)
+            bet["pnl"] = self.pnl_for_bet(bet, bet["result"])
 
             total_pnl += bet["pnl"]
 
@@ -354,7 +407,7 @@ class SeasonTracker:
         starting = self.data["starting_bankroll"]
         current = self.get_current_bankroll()
         wins = losses = pushes = 0
-        ml_w = ml_l = sp_w = sp_l = 0
+        ml_w = ml_l = sp_w = sp_l = tot_w = tot_l = 0
         total_wagered = 0.0
 
         for wk_data in self.data["weeks"].values():
@@ -366,15 +419,19 @@ class SeasonTracker:
                     total_wagered += b["amount"]
                     if b["type"] == "ml":
                         ml_w += 1
-                    else:
+                    elif b["type"] == "spread":
                         sp_w += 1
+                    else:
+                        tot_w += 1
                 elif b["result"] == "loss":
                     losses += 1
                     total_wagered += b["amount"]
                     if b["type"] == "ml":
                         ml_l += 1
-                    else:
+                    elif b["type"] == "spread":
                         sp_l += 1
+                    else:
+                        tot_l += 1
                 elif b["result"] == "push":
                     pushes += 1
 
@@ -387,6 +444,7 @@ class SeasonTracker:
             "record": f"{wins}-{losses}" + (f"-{pushes}" if pushes else ""),
             "ml_record": f"{ml_w}-{ml_l}",
             "spread_record": f"{sp_w}-{sp_l}",
+            "total_record": f"{tot_w}-{tot_l}",
             "total_wagered": round(total_wagered, 2),
         }
 
