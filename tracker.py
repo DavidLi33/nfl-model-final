@@ -6,11 +6,12 @@ State is stored in JSON files under tracker/ directory (one per season).
 """
 
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List
 
-TRACKER_DIR = Path(__file__).parent / "tracker"
+TRACKER_DIR = Path(os.environ.get("TRACKER_DIR", Path(__file__).parent / "tracker"))
 
 
 class SeasonTracker:
@@ -73,10 +74,10 @@ class SeasonTracker:
                   bet_pct: int = 100,
                   turnover_slopes: Optional[dict] = None,
                   avg_sow: Optional[float] = None) -> bool:
-        """Initialize a week with model predictions. Only works for new/pending weeks."""
+        """Initialize a week with model predictions. Only works for new/pending/projection-only weeks."""
         wk_str = str(week)
         existing = self.data["weeks"].get(wk_str)
-        if existing and existing["status"] != "pending":
+        if existing and existing["status"] not in ("pending", "projection_only"):
             return False
 
         bankroll = self.get_current_bankroll()

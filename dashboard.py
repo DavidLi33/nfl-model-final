@@ -430,7 +430,7 @@ TEMPLATE = """
   </div>
 
   <!-- ═══ STATUS: NEW ═══ -->
-  {% if status == 'new' %}
+  {% if status in ('new', 'projection_only') %}
   <div class="msg msg-info">
     Run the model to generate predictions and bet recommendations for this week.
   </div>
@@ -2223,7 +2223,7 @@ def run_model():
         tracker.set_starting_bankroll(bankroll)
 
     # Check if week can be initialized
-    if tracker.week_status(week) not in ("new", "pending"):
+    if tracker.week_status(week) not in ("new", "pending", "projection_only"):
         return redirect(f"/?year={year}&week={week}&error=Cannot+re-run+locked+or+graded+week")
 
     predictions, team_stats, turnover_slopes, avg_sow, error = _run_model(year, week, bet_pct)
