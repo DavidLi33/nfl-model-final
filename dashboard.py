@@ -9,11 +9,15 @@ Usage:
     # Then open http://localhost:5050
 """
 
+import json
 import os
+import re
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from urllib.parse import urlencode
 from flask import Flask, render_template_string, request, jsonify, redirect, session
+import requests
 
 from data_loader import (
     load_master_data, load_team_glossary, load_schedule,
@@ -487,6 +491,7 @@ TEMPLATE = """
       <input type="checkbox" id="selected-only" onchange="applySelectedOnlyFilter()">
       Selected Only
     </label>
+    <button type="button" class="btn-sm btn-muted" onclick="selectRecommendedBets()">Select Recommended</button>
     <button type="button" class="btn-sm btn-muted" onclick="copySelectedBets()">Copy Selected Bets</button>
     <span id="copy-note" class="copy-note">Copied!</span>
   </div>
@@ -514,6 +519,7 @@ TEMPLATE = """
       {% for b in g.bets %}
       <div class="bet-row {{ 'selected' if b.selected }}" id="row-{{ b.id }}"
            data-bet-row data-bet-id="{{ b.id }}" data-selected="{{ 'true' if b.selected else 'false' }}"
+           data-recommended="{{ 'true' if b.recommended else 'false' }}"
            data-team="{{ b.pick }}" data-type="{{ b.type }}" data-line="{{ b.get('spread_points', b.get('total_line', '')) }}"
            data-odds="{{ b.odds }}" data-amount="{{ b.amount }}" data-pick="{{ b.pick }}">
         <div class="bet-check {{ 'on' if b.selected }}" id="check-{{ b.id }}"
@@ -1192,17 +1198,27 @@ function ensureWriteAuth(forcePrompt) {
     }
     var pwd = window.prompt('Enter write password');
     if (pwd === null) return Promise.resolve(false);
+    var user = sessionStorage.getItem('nfl-screen-user') || '';
+    if (forcePrompt || !user) {
+        user = window.prompt('Enter your name for last-screen restore', user);
+        if (user === null) return Promise.resolve(false);
+        user = user.trim();
+    }
     return fetch('/auth', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({password: pwd})
+        body: JSON.stringify({password: pwd, user: user})
     }).then(function(r) {
         if (!r.ok) throw new Error('Incorrect password');
         return r.json();
     }).then(function(data) {
         if (data.ok) {
             sessionStorage.setItem('nfl-write-unlocked', 'true');
+            if (data.user) sessionStorage.setItem('nfl-screen-user', data.user);
             updateAuthUI();
+            if (forcePrompt && data.last_screen && data.last_screen !== window.location.pathname + window.location.search) {
+                window.location.href = data.last_screen;
+            }
             return true;
         }
         return false;
@@ -1276,6 +1292,28 @@ function copySelectedBets() {
             note.classList.add('show');
             setTimeout(function() { note.classList.remove('show'); }, 1300);
         }
+    });
+}
+
+function selectRecommendedBets() {
+    var recommendedIds = Array.from(document.querySelectorAll('[data-bet-row]'))
+        .filter(function(row) { return row.dataset.recommended === 'true'; })
+        .map(function(row) { return row.dataset.betId; });
+
+    if (!recommendedIds.length) {
+        alert('No recommended bets for this week.');
+        return;
+    }
+
+    ensureWriteAuth(false).then(function(ok) {
+        if (!ok) return;
+        fetch('/sync-selection', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({year: YEAR, week: WEEK, selected_ids: recommendedIds})
+        }).then(function(r) { return r.json(); }).then(function(data) {
+            if (data.ok) applyBetState(data);
+        });
     });
 }
 
@@ -1771,6 +1809,84 @@ def _is_write_unlocked() -> bool:
     return not password or bool(session.get("write_unlocked"))
 
 
+def _screen_user(raw_user: str) -> str:
+    """Normalize a login name so it is safe to use as part of a Redis key."""
+    user = (raw_user or "").strip().lower()
+    user = re.sub(r"[^a-z0-9_.@-]+", "-", user)
+    return user.strip("-")[:80]
+
+
+def _safe_screen_path(raw_path: str) -> str:
+    """Only allow internal dashboard paths to be restored after login."""
+    if not raw_path or not raw_path.startswith("/") or raw_path.startswith("//"):
+        return "/"
+    if raw_path.startswith("/auth"):
+        return "/"
+    return raw_path[:500]
+
+
+def _current_screen_path() -> str:
+    args = {
+        key: value
+        for key, value in request.args.items()
+        if key not in ("error", "success")
+    }
+    return "/" + (f"?{urlencode(args)}" if args else "")
+
+
+def _upstash_config():
+    url = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+    if not url or not token:
+        return None
+    return url, token
+
+
+def _last_screen_key(user: str) -> str:
+    return f"last_screen:{user}"
+
+
+def _upstash_request(command: list):
+    config = _upstash_config()
+    if not config:
+        return None
+    url, token = config
+    try:
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            json=command,
+            timeout=2,
+        )
+        resp.raise_for_status()
+        return resp.json().get("result")
+    except requests.RequestException as err:
+        app.logger.warning("Upstash request failed: %s", err)
+        return None
+
+
+def _save_last_screen(user: str, path: str) -> None:
+    user = _screen_user(user)
+    if not user:
+        return
+    payload = json.dumps({"path": _safe_screen_path(path)})
+    _upstash_request(["SET", _last_screen_key(user), payload])
+
+
+def _load_last_screen(user: str):
+    user = _screen_user(user)
+    if not user:
+        return None
+    raw = _upstash_request(["GET", _last_screen_key(user)])
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return _safe_screen_path(data.get("path"))
+
+
 def _require_write_auth_json():
     if _is_write_unlocked():
         return None
@@ -2019,8 +2135,12 @@ def auth_write_actions():
     data = request.get_json(silent=True) or {}
     password = _configured_password()
     if not password or data.get("password") == password:
+        screen_user = _screen_user(data.get("user"))
         session["write_unlocked"] = True
-        return jsonify({"ok": True})
+        if screen_user:
+            session["screen_user"] = screen_user
+        last_screen = _load_last_screen(screen_user) if screen_user else None
+        return jsonify({"ok": True, "user": screen_user, "last_screen": last_screen})
     return jsonify({"ok": False, "error": "Incorrect password"}), 401
 
 
@@ -2034,6 +2154,8 @@ def index():
         tab = "week"
     if pnl_mode not in ("actual", "projected"):
         pnl_mode = "actual"
+    if session.get("screen_user"):
+        _save_last_screen(session["screen_user"], _current_screen_path())
 
     tracker = SeasonTracker(year)
     status = tracker.week_status(week)

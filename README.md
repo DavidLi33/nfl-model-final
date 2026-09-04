@@ -46,5 +46,45 @@ Running the pipeline writes files to `output/`, including:
 - run parameters,
 - and bet sheets.
 
+## Render deployment
+
+Use these commands for the Render Web Service:
+
+```bash
+pip install -r requirements.txt
+```
+
+```bash
+gunicorn dashboard:app
+```
+
+Set these environment variables:
+
+```text
+APP_PASSWORD=<your write-action password>
+SECRET_KEY=<long random string>
+```
+
+Optional cross-device last-screen restore uses Upstash Redis. Create a free
+Upstash Redis database and add:
+
+```text
+UPSTASH_REDIS_REST_URL=<your Upstash REST URL>
+UPSTASH_REDIS_REST_TOKEN=<your Upstash REST token>
+```
+
+When a user unlocks write mode, they enter the shared password plus their name.
+The app stores that user's last dashboard screen under a Redis key like
+`last_screen:david`, so the same user can restore it from another device.
+
+To preserve tracker state across Render restarts and redeploys, add a persistent
+disk mounted at `/var/data`, then set:
+
+```text
+TRACKER_DIR=/var/data/tracker
+```
+
+Without `TRACKER_DIR`, the app uses the local repository `tracker/` folder.
+
 Live site:
 https://nfl-model-final.onrender.com/
