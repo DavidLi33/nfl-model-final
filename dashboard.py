@@ -34,6 +34,8 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-nfl-dashboard-secret")
 BASE_DIR = Path(__file__).parent
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
+DEFAULT_YEAR = 2026
+HIDDEN_YEARS = {2027}
 
 # ─── HTML Template ───────────────────────────────────────────────────────────
 
@@ -356,9 +358,16 @@ TEMPLATE = """
       <h1>NFL Betting Tracker</h1>
       <p class="subtitle">{{ year }} Season &mdash; Model v5</p>
     </div>
-    <button type="button" id="auth-pill" class="auth-pill" onclick="unlockWrites()" title="Sign in">
-      <span id="auth-icon">SIGN IN</span><span id="auth-text">Guest</span>
-    </button>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button type="button" id="auth-pill" class="auth-pill" onclick="unlockWrites()" title="Sign in">
+        <span id="auth-icon">SIGN IN</span><span id="auth-text">Guest</span>
+      </button>
+      {% if is_write_unlocked %}
+      <form method="POST" action="/sign-out" data-skip-auth="true" style="margin:0;">
+        <button type="submit" class="btn-sm btn-muted">Sign Out</button>
+      </form>
+      {% endif %}
+    </div>
   </div>
 
   <div class="tabs">
@@ -1224,6 +1233,7 @@ function updateAuthUI() {
 }
 
 function unlockWrites() {
+    if (CLIENT_UNLOCKED) return Promise.resolve(true);
     return ensureWriteAuth(true);
 }
 
@@ -1272,6 +1282,7 @@ function ensureWriteAuth(forcePrompt) {
 function bindProtectedForms() {
     document.querySelectorAll('form[method="POST"]').forEach(function(form) {
         form.addEventListener('submit', function(e) {
+            if (form.dataset.skipAuth === 'true') return;
             if (form.dataset.authSubmitting === 'true') return;
             e.preventDefault();
             ensureWriteAuth(false).then(function(ok) {
@@ -2201,9 +2212,16 @@ def auth_write_actions():
     return jsonify({"ok": False, "error": "Incorrect password"}), 401
 
 
+@app.route("/sign-out", methods=["POST"])
+def sign_out():
+    session.pop("write_unlocked", None)
+    session.pop("screen_user", None)
+    return redirect(f"/?year={DEFAULT_YEAR}&week=1")
+
+
 @app.route("/")
 def index():
-    year = request.args.get("year", 2025, type=int)
+    year = request.args.get("year", DEFAULT_YEAR, type=int)
     week = request.args.get("week", 1, type=int)
     tab = request.args.get("tab", "week")
     pnl_mode = request.args.get("pnl_mode", "actual")
@@ -2220,7 +2238,7 @@ def index():
     summary = tracker.get_season_summary()
     week_statuses = tracker.all_week_statuses()
 
-    years = sorted(YEAR_INDEX_MAP.keys())
+    years = [y for y in sorted(YEAR_INDEX_MAP.keys()) if y not in HIDDEN_YEARS]
     games = _build_games_list(week_data) if week_data else []
     team_stats = week_data.get("team_stats", {})
 
@@ -2265,7 +2283,7 @@ def index():
 
 @app.route("/run", methods=["POST"])
 def run_model():
-    year = request.form.get("year", 2025, type=int)
+    year = request.form.get("year", DEFAULT_YEAR, type=int)
     week = request.form.get("week", 1, type=int)
     bankroll = request.form.get("bankroll", 1000, type=float)
     bet_pct = request.form.get("bet_pct", 100, type=int)
@@ -2332,7 +2350,7 @@ def run_projection():
          most recent master_data window so the user can still see a full-season
          projection without spreads/odds.
     """
-    year = request.form.get("year", 2025, type=int)
+    year = request.form.get("year", DEFAULT_YEAR, type=int)
     week = request.form.get("week", 1, type=int)
 
     auth_redirect = _require_write_auth_redirect(year, week)
@@ -2414,7 +2432,7 @@ def run_projection():
 
 @app.route("/mirofish", methods=["POST"])
 def run_mirofish():
-    year = request.form.get("year", 2025, type=int)
+    year = request.form.get("year", DEFAULT_YEAR, type=int)
     week = request.form.get("week", 1, type=int)
 
     auth_redirect = _require_write_auth_redirect(year, week)
@@ -2460,7 +2478,7 @@ def toggle_bet():
         return auth_error
 
     data = request.get_json()
-    year = data.get("year", 2025)
+    year = data.get("year", DEFAULT_YEAR)
     week = data.get("week", 1)
     bet_id = data.get("bet_id")
 
@@ -2487,7 +2505,7 @@ def sync_selection():
         return auth_error
 
     data = request.get_json()
-    year = data.get("year", 2025)
+    year = data.get("year", DEFAULT_YEAR)
     week = data.get("week", 1)
     selected_ids = data.get("selected_ids", [])
 
@@ -2507,7 +2525,7 @@ def sync_selection():
 
 @app.route("/lock", methods=["POST"])
 def lock_bets():
-    year = request.form.get("year", 2025, type=int)
+    year = request.form.get("year", DEFAULT_YEAR, type=int)
     week = request.form.get("week", 1, type=int)
 
     auth_redirect = _require_write_auth_redirect(year, week)
@@ -2530,7 +2548,7 @@ def lock_bets():
 
 @app.route("/unlock", methods=["POST"])
 def unlock_bets():
-    year = request.form.get("year", 2025, type=int)
+    year = request.form.get("year", DEFAULT_YEAR, type=int)
     week = request.form.get("week", 1, type=int)
 
     auth_redirect = _require_write_auth_redirect(year, week)
@@ -2545,7 +2563,7 @@ def unlock_bets():
 
 @app.route("/reset-week", methods=["POST"])
 def reset_week():
-    year = request.form.get("year", 2025, type=int)
+    year = request.form.get("year", DEFAULT_YEAR, type=int)
     week = request.form.get("week", 1, type=int)
 
     auth_redirect = _require_write_auth_redirect(year, week)
@@ -2560,7 +2578,7 @@ def reset_week():
 
 @app.route("/grade", methods=["POST"])
 def grade_week():
-    year = request.form.get("year", 2025, type=int)
+    year = request.form.get("year", DEFAULT_YEAR, type=int)
     week = request.form.get("week", 1, type=int)
 
     auth_redirect = _require_write_auth_redirect(year, week)
