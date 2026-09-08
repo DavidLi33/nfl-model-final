@@ -65,8 +65,8 @@ APP_PASSWORD=<your write-action password>
 SECRET_KEY=<long random string>
 ```
 
-Optional cross-device last-screen restore uses Upstash Redis. Create a free
-Upstash Redis database and add:
+Optional cross-device last-screen restore and durable tracker state use Upstash
+Redis. Create a free Upstash Redis database and add:
 
 ```text
 UPSTASH_REDIS_REST_URL=<your Upstash REST URL>
@@ -77,6 +77,10 @@ When a user unlocks write mode, they enter the shared password plus their name.
 The app stores that user's last dashboard screen under a Redis key like
 `last_screen:david`, so the same user can restore it from another device.
 
+When these Redis variables are set, the app also stores season tracker state
+under keys like `season_tracker:2025`. This preserves selected, locked,
+unlocked, and graded bets across Render restarts and redeploys.
+
 To preserve tracker state across Render restarts and redeploys, add a persistent
 disk mounted at `/var/data`, then set:
 
@@ -84,7 +88,8 @@ disk mounted at `/var/data`, then set:
 TRACKER_DIR=/var/data/tracker
 ```
 
-Without `TRACKER_DIR`, the app uses the local repository `tracker/` folder.
+Without Redis or `TRACKER_DIR`, the app uses the local repository `tracker/`
+folder, which is not durable on Render.
 
 Live site:
 https://nfl-model-final.onrender.com/

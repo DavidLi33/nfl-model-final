@@ -6,12 +6,47 @@ State is stored in JSON files under tracker/ directory (one per season).
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List
 
+import requests
+
 TRACKER_DIR = Path(os.environ.get("TRACKER_DIR", Path(__file__).parent / "tracker"))
+LOGGER = logging.getLogger(__name__)
+
+
+def _upstash_config():
+    url = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+    if not url or not token:
+        return None
+    return url, token
+
+
+def _season_key(season: int) -> str:
+    return f"season_tracker:{season}"
+
+
+def _upstash_request(command: list):
+    config = _upstash_config()
+    if not config:
+        return None
+    url, token = config
+    try:
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            json=command,
+            timeout=3,
+        )
+        resp.raise_for_status()
+        return resp.json().get("result")
+    except requests.RequestException as err:
+        LOGGER.warning("Upstash tracker request failed: %s", err)
+        return None
 
 
 class SeasonTracker:
@@ -23,16 +58,29 @@ class SeasonTracker:
         self.data = self._load()
 
     def _load(self) -> dict:
-        TRACKER_DIR.mkdir(exist_ok=True)
+        raw = _upstash_request(["GET", _season_key(self.season)])
+        if raw:
+            try:
+                return json.loads(raw)
+            except (TypeError, ValueError) as err:
+                LOGGER.warning("Could not parse Redis tracker state: %s", err)
+
+        TRACKER_DIR.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             with open(self.path) as f:
                 return json.load(f)
         return {"season": self.season, "starting_bankroll": 1000.0, "weeks": {}}
 
     def save(self):
-        TRACKER_DIR.mkdir(exist_ok=True)
+        payload = json.dumps(self.data, indent=2, default=str)
+        if _upstash_config():
+            saved = _upstash_request(["SET", _season_key(self.season), payload])
+            if saved is not None:
+                return
+
+        TRACKER_DIR.mkdir(parents=True, exist_ok=True)
         with open(self.path, 'w') as f:
-            json.dump(self.data, f, indent=2, default=str)
+            f.write(payload)
 
     @property
     def starting_bankroll(self) -> float:
