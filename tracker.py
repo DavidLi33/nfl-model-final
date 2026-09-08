@@ -294,7 +294,7 @@ class SeasonTracker:
         return True
 
     def lock_bets(self, week: int) -> bool:
-        """Lock bets for a week. No changes allowed after this."""
+        """Lock bets for a week."""
         wk_str = str(week)
         wk_data = self.data["weeks"].get(wk_str)
         if not wk_data or wk_data["status"] != "pending":
@@ -306,6 +306,20 @@ class SeasonTracker:
 
         wk_data["status"] = "locked"
         wk_data["locked_at"] = datetime.now().isoformat()
+        self.save()
+        return True
+
+    def unlock_bets(self, week: int) -> bool:
+        """Move a locked week back to pending so selections can be edited."""
+        wk_str = str(week)
+        wk_data = self.data["weeks"].get(wk_str)
+        if not wk_data or wk_data["status"] != "locked":
+            return False
+
+        wk_data["status"] = "pending"
+        wk_data["locked_at"] = None
+        wk_data["unlocked_at"] = datetime.now().isoformat()
+        self._recalculate_amounts(wk_str)
         self.save()
         return True
 

@@ -615,7 +615,7 @@ TEMPLATE = """
       <input type="hidden" name="year" value="{{ year }}">
       <input type="hidden" name="week" value="{{ week }}">
       <button type="submit" class="btn-green"
-              onclick="return confirm('Lock these bets? You cannot change them after locking.')">
+              onclick="return confirm('Lock these bets? You can unlock them later if changes are needed.')">
         Lock Bets
       </button>
     </form>
@@ -624,7 +624,7 @@ TEMPLATE = """
   <!-- ═══ STATUS: LOCKED ═══ -->
   {% elif status == 'locked' %}
   <div class="msg msg-info" style="display:flex; justify-content:space-between; align-items:center;">
-    <span>Bets are locked. After games finish, grade results to see your P&amp;L.</span>
+    <span>Bets are locked. Unlock to edit selections, or grade results after games finish.</span>
     <span style="color:var(--muted); font-size:0.8rem;">
       Locked {{ week_data.locked_at[:16] if week_data.locked_at else '' }}
     </span>
@@ -679,6 +679,14 @@ TEMPLATE = """
       Total wagered: <strong>${{ "%.2f"|format(total_wagered) }}</strong>
     </div>
     <div class="spacer"></div>
+    <form method="POST" action="/unlock" style="margin:0;">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="week" value="{{ week }}">
+      <button type="submit" class="btn-muted"
+              onclick="return confirm('Unlock this week and edit bets?')">
+        Unlock Bets
+      </button>
+    </form>
     <form method="POST" action="/grade" style="margin:0;">
       <input type="hidden" name="year" value="{{ year }}">
       <input type="hidden" name="week" value="{{ week }}">
@@ -2468,6 +2476,21 @@ def lock_bets():
     if tracker.lock_bets(week):
         return redirect(f"/?year={year}&week={week}&success=Bets+locked")
     return redirect(f"/?year={year}&week={week}&error=Could+not+lock+bets")
+
+
+@app.route("/unlock", methods=["POST"])
+def unlock_bets():
+    year = request.form.get("year", 2025, type=int)
+    week = request.form.get("week", 1, type=int)
+
+    auth_redirect = _require_write_auth_redirect(year, week)
+    if auth_redirect:
+        return auth_redirect
+
+    tracker = SeasonTracker(year)
+    if tracker.unlock_bets(week):
+        return redirect(f"/?year={year}&week={week}&success=Bets+unlocked")
+    return redirect(f"/?year={year}&week={week}&error=Could+not+unlock+bets")
 
 
 @app.route("/grade", methods=["POST"])
