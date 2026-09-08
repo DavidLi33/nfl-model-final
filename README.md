@@ -73,7 +73,7 @@ UPSTASH_REDIS_REST_URL=<your Upstash REST URL>
 UPSTASH_REDIS_REST_TOKEN=<your Upstash REST token>
 ```
 
-When a user unlocks write mode, they enter the shared password plus their name.
+When a user signs in, they enter the shared password plus their name.
 The app stores that user's last dashboard screen under a Redis key like
 `last_screen:david`, so the same user can restore it from another device.
 

@@ -356,8 +356,8 @@ TEMPLATE = """
       <h1>NFL Betting Tracker</h1>
       <p class="subtitle">{{ year }} Season &mdash; Model v5</p>
     </div>
-    <button type="button" id="auth-pill" class="auth-pill" onclick="unlockWrites()" title="Unlock write actions">
-      <span id="auth-icon">LOCK</span><span id="auth-text">Read-only</span>
+    <button type="button" id="auth-pill" class="auth-pill" onclick="unlockWrites()" title="Sign in">
+      <span id="auth-icon">SIGN IN</span><span id="auth-text">Guest</span>
     </button>
   </div>
 
@@ -1219,8 +1219,8 @@ function updateAuthUI() {
     var text = document.getElementById('auth-text');
     if (!pill) return;
     pill.classList.toggle('unlocked', unlocked);
-    icon.textContent = unlocked ? 'UNLOCK' : 'LOCK';
-    text.textContent = unlocked ? 'Write mode' : 'Read-only';
+    icon.textContent = unlocked ? 'SIGNED IN' : 'SIGN IN';
+    text.textContent = unlocked ? TRACKER_USER : 'Guest';
 }
 
 function unlockWrites() {
@@ -1231,11 +1231,11 @@ function ensureWriteAuth(forcePrompt) {
     if (!forcePrompt && CLIENT_UNLOCKED) {
         return Promise.resolve(true);
     }
-    var pwd = window.prompt('Enter write password');
+    var pwd = window.prompt('Enter sign-in password');
     if (pwd === null) return Promise.resolve(false);
     var user = sessionStorage.getItem('nfl-screen-user') || '';
     if (forcePrompt || !user) {
-        user = window.prompt('Enter your name for last-screen restore', user);
+        user = window.prompt('Enter your name', user);
         if (user === null) return Promise.resolve(false);
         user = user.trim();
     }
@@ -1262,7 +1262,7 @@ function ensureWriteAuth(forcePrompt) {
         }
         return false;
     }).catch(function(err) {
-        alert(err.message || 'Could not unlock write actions');
+        alert(err.message || 'Could not sign in');
         CLIENT_UNLOCKED = false;
         updateAuthUI();
         return false;
