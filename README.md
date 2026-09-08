@@ -77,9 +77,11 @@ When a user unlocks write mode, they enter the shared password plus their name.
 The app stores that user's last dashboard screen under a Redis key like
 `last_screen:david`, so the same user can restore it from another device.
 
-When these Redis variables are set, the app also stores season tracker state
-under keys like `season_tracker:2025`. This preserves selected, locked,
-unlocked, and graded bets across Render restarts and redeploys.
+When these Redis variables are set, the app also stores per-user season tracker
+state under keys like `season_tracker:david:2025` and
+`season_tracker:chas:2025`. This preserves each user's selected, locked,
+unlocked, and graded bets across Render restarts and redeploys without mixing
+their records.
 
 To preserve tracker state across Render restarts and redeploys, add a persistent
 disk mounted at `/var/data`, then set:

@@ -26,8 +26,14 @@ def _upstash_config():
     return url, token
 
 
-def _season_key(season: int) -> str:
-    return f"season_tracker:{season}"
+def _tracker_user(raw_user: Optional[str]) -> str:
+    user = (raw_user or "guest").strip().lower()
+    safe = "".join(ch if ch.isalnum() or ch in "_.@-" else "-" for ch in user)
+    return safe.strip("-")[:80] or "guest"
+
+
+def _season_key(season: int, user: str) -> str:
+    return f"season_tracker:{_tracker_user(user)}:{season}"
 
 
 def _upstash_request(command: list):
@@ -52,13 +58,14 @@ def _upstash_request(command: list):
 class SeasonTracker:
     """Manages bet tracking state for an NFL season."""
 
-    def __init__(self, season: int):
+    def __init__(self, season: int, user: Optional[str] = None):
         self.season = season
-        self.path = TRACKER_DIR / f"season_{season}.json"
+        self.user = _tracker_user(user)
+        self.path = TRACKER_DIR / f"season_{self.user}_{season}.json"
         self.data = self._load()
 
     def _load(self) -> dict:
-        raw = _upstash_request(["GET", _season_key(self.season)])
+        raw = _upstash_request(["GET", _season_key(self.season, self.user)])
         if raw:
             try:
                 return json.loads(raw)
@@ -74,7 +81,7 @@ class SeasonTracker:
     def save(self):
         payload = json.dumps(self.data, indent=2, default=str)
         if _upstash_config():
-            saved = _upstash_request(["SET", _season_key(self.season), payload])
+            saved = _upstash_request(["SET", _season_key(self.season, self.user), payload])
             if saved is not None:
                 return
 

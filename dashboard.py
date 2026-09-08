@@ -111,13 +111,12 @@ TEMPLATE = """
                border:1px solid var(--border); border-radius:6px; background:var(--surface);
                color:var(--muted); font-size:0.78rem; }
   .auth-pill.unlocked { color:var(--green); border-color:rgba(102,187,106,0.45); }
+  .filter-btn.active { background: var(--accent); color: #0f1117; }
   .tabs { display:flex; gap:8px; margin: 18px 0 20px; border-bottom:1px solid var(--border); }
   .tab { color:var(--muted); text-decoration:none; padding:10px 12px; border-bottom:2px solid transparent;
          font-size:0.85rem; font-weight:700; }
   .tab.active { color:var(--accent); border-color:var(--accent); }
   .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
-  .toggle-label { display:inline-flex; gap:8px; align-items:center; color:var(--muted);
-                  font-size:0.82rem; cursor:pointer; user-select:none; }
   .copy-note { color:var(--green); font-size:0.8rem; opacity:0; transition:opacity 0.15s; }
   .copy-note.show { opacity:1; }
 
@@ -469,7 +468,12 @@ TEMPLATE = """
       <form method="POST" action="/run" style="margin:0;">
         <input type="hidden" name="year" value="{{ year }}">
         <input type="hidden" name="week" value="{{ week }}">
+        {% if week == 1 and not bankroll_locked %}
+        <input type="number" name="bankroll" value="{{ "%.0f"|format(summary.starting_bankroll) }}"
+               step="100" min="100" style="width:95px;">
+        {% else %}
         <input type="hidden" name="bankroll" value="{{ "%.0f"|format(summary.starting_bankroll) }}">
+        {% endif %}
         <input type="hidden" name="bet_pct" value="{{ week_data.bet_pct }}">
         <button type="submit" class="btn-sm btn-muted">Re-run Model</button>
       </form>
@@ -487,10 +491,8 @@ TEMPLATE = """
       <div class="label">Projected Profit (if all selected hit)</div>
       <div class="val green" id="projected-profit">${{ "%.2f"|format(projected_profit) }}</div>
     </div>
-    <label class="toggle-label">
-      <input type="checkbox" id="selected-only" onchange="applySelectedOnlyFilter()">
-      Selected Only
-    </label>
+    <button type="button" id="selected-only" class="btn-sm btn-muted filter-btn"
+            data-active="false" onclick="toggleSelectedOnly()">Selected Only</button>
     <button type="button" class="btn-sm btn-muted" onclick="selectRecommendedBets()">Select Recommended</button>
     <button type="button" class="btn-sm btn-muted" onclick="copySelectedBets()">Copy Selected Bets</button>
     <span id="copy-note" class="copy-note">Copied!</span>
@@ -611,6 +613,14 @@ TEMPLATE = """
       of ${{ "%.2f"|format(week_data.bankroll_before) }}
     </div>
     <div class="spacer"></div>
+    <form method="POST" action="/reset-week" style="margin:0;">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="week" value="{{ week }}">
+      <button type="submit" class="btn-red"
+              onclick="return confirm('Reset this week and clear all saved bets/results?')">
+        Reset Week
+      </button>
+    </form>
     <form method="POST" action="/lock" style="margin:0;">
       <input type="hidden" name="year" value="{{ year }}">
       <input type="hidden" name="week" value="{{ week }}">
@@ -679,6 +689,14 @@ TEMPLATE = """
       Total wagered: <strong>${{ "%.2f"|format(total_wagered) }}</strong>
     </div>
     <div class="spacer"></div>
+    <form method="POST" action="/reset-week" style="margin:0;">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="week" value="{{ week }}">
+      <button type="submit" class="btn-red"
+              onclick="return confirm('Reset this week and clear all saved bets/results?')">
+        Reset Week
+      </button>
+    </form>
     <form method="POST" action="/unlock" style="margin:0;">
       <input type="hidden" name="year" value="{{ year }}">
       <input type="hidden" name="week" value="{{ week }}">
@@ -771,6 +789,14 @@ TEMPLATE = """
       Graded {{ week_data.graded_at[:16] if week_data.graded_at else '' }}
     </span>
     <div class="spacer"></div>
+    <form method="POST" action="/reset-week" style="margin:0;">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="week" value="{{ week }}">
+      <button type="submit" class="btn-sm btn-red"
+              onclick="return confirm('Reset this week and clear all saved bets/results?')">
+        Reset Week
+      </button>
+    </form>
     <form method="POST" action="/grade" style="margin:0;">
       <input type="hidden" name="year" value="{{ year }}">
       <input type="hidden" name="week" value="{{ week }}">
@@ -1170,8 +1196,10 @@ TEMPLATE = """
 const YEAR = {{ year }};
 const WEEK = {{ week }};
 const STATUS = {{ status|tojson }};
+const TRACKER_USER = {{ current_user|tojson }};
 const SERVER_UNLOCKED = {{ 'true' if is_write_unlocked else 'false' }};
-const STORE_KEY = 'nfl-bets-' + YEAR + '-week-' + WEEK;
+let CLIENT_UNLOCKED = SERVER_UNLOCKED;
+const STORE_KEY = 'nfl-bets-' + TRACKER_USER + '-' + YEAR + '-week-' + WEEK;
 
 function getSelectedIdsFromDom() {
     return Array.from(document.querySelectorAll('[data-bet-row]'))
@@ -1185,7 +1213,7 @@ function persistWeekState() {
 }
 
 function updateAuthUI() {
-    var unlocked = sessionStorage.getItem('nfl-write-unlocked') === 'true' || SERVER_UNLOCKED;
+    var unlocked = CLIENT_UNLOCKED;
     var pill = document.getElementById('auth-pill');
     var icon = document.getElementById('auth-icon');
     var text = document.getElementById('auth-text');
@@ -1193,7 +1221,6 @@ function updateAuthUI() {
     pill.classList.toggle('unlocked', unlocked);
     icon.textContent = unlocked ? 'UNLOCK' : 'LOCK';
     text.textContent = unlocked ? 'Write mode' : 'Read-only';
-    if (SERVER_UNLOCKED) sessionStorage.setItem('nfl-write-unlocked', 'true');
 }
 
 function unlockWrites() {
@@ -1201,7 +1228,7 @@ function unlockWrites() {
 }
 
 function ensureWriteAuth(forcePrompt) {
-    if (!forcePrompt && (SERVER_UNLOCKED || sessionStorage.getItem('nfl-write-unlocked') === 'true')) {
+    if (!forcePrompt && CLIENT_UNLOCKED) {
         return Promise.resolve(true);
     }
     var pwd = window.prompt('Enter write password');
@@ -1221,9 +1248,13 @@ function ensureWriteAuth(forcePrompt) {
         return r.json();
     }).then(function(data) {
         if (data.ok) {
-            sessionStorage.setItem('nfl-write-unlocked', 'true');
+            CLIENT_UNLOCKED = true;
             if (data.user) sessionStorage.setItem('nfl-screen-user', data.user);
             updateAuthUI();
+            if (data.user && data.user !== TRACKER_USER) {
+                window.location.href = data.last_screen || (window.location.pathname + window.location.search);
+                return false;
+            }
             if (forcePrompt && data.last_screen && data.last_screen !== window.location.pathname + window.location.search) {
                 window.location.href = data.last_screen;
             }
@@ -1232,7 +1263,7 @@ function ensureWriteAuth(forcePrompt) {
         return false;
     }).catch(function(err) {
         alert(err.message || 'Could not unlock write actions');
-        sessionStorage.removeItem('nfl-write-unlocked');
+        CLIENT_UNLOCKED = false;
         updateAuthUI();
         return false;
     });
@@ -1271,7 +1302,7 @@ function recalcProjectedProfit() {
 
 function applySelectedOnlyFilter() {
     var selectedOnly = document.getElementById('selected-only');
-    selectedOnly = selectedOnly && selectedOnly.checked;
+    selectedOnly = selectedOnly && selectedOnly.dataset.active === 'true';
     document.querySelectorAll('[data-bet-row]').forEach(function(row) {
         row.style.display = (!selectedOnly || row.dataset.selected === 'true') ? '' : 'none';
     });
@@ -1280,6 +1311,15 @@ function applySelectedOnlyFilter() {
             .filter(function(row) { return row.style.display !== 'none'; });
         card.style.display = (!selectedOnly || visibleRows.length > 0) ? '' : 'none';
     });
+}
+
+function toggleSelectedOnly() {
+    var btn = document.getElementById('selected-only');
+    if (!btn) return;
+    var active = btn.dataset.active === 'true';
+    btn.dataset.active = active ? 'false' : 'true';
+    btn.classList.toggle('active', !active);
+    applySelectedOnlyFilter();
 }
 
 function copySelectedBets() {
@@ -1814,7 +1854,7 @@ def _configured_password() -> str:
 
 def _is_write_unlocked() -> bool:
     password = _configured_password()
-    return not password or bool(session.get("write_unlocked"))
+    return bool(session.get("screen_user")) and (not password or bool(session.get("write_unlocked")))
 
 
 def _screen_user(raw_user: str) -> str:
@@ -1822,6 +1862,14 @@ def _screen_user(raw_user: str) -> str:
     user = (raw_user or "").strip().lower()
     user = re.sub(r"[^a-z0-9_.@-]+", "-", user)
     return user.strip("-")[:80]
+
+
+def _current_tracker_user() -> str:
+    return session.get("screen_user") or "guest"
+
+
+def _season_tracker(year: int) -> SeasonTracker:
+    return SeasonTracker(year, _current_tracker_user())
 
 
 def _safe_screen_path(raw_path: str) -> str:
@@ -2144,9 +2192,10 @@ def auth_write_actions():
     password = _configured_password()
     if not password or data.get("password") == password:
         screen_user = _screen_user(data.get("user"))
+        if not screen_user:
+            return jsonify({"ok": False, "error": "Name required"}), 400
         session["write_unlocked"] = True
-        if screen_user:
-            session["screen_user"] = screen_user
+        session["screen_user"] = screen_user
         last_screen = _load_last_screen(screen_user) if screen_user else None
         return jsonify({"ok": True, "user": screen_user, "last_screen": last_screen})
     return jsonify({"ok": False, "error": "Incorrect password"}), 401
@@ -2165,7 +2214,7 @@ def index():
     if session.get("screen_user"):
         _save_last_screen(session["screen_user"], _current_screen_path())
 
-    tracker = SeasonTracker(year)
+    tracker = _season_tracker(year)
     status = tracker.week_status(week)
     week_data = tracker.get_week(week) or {}
     summary = tracker.get_season_summary()
@@ -2209,6 +2258,7 @@ def index():
         projection=projection,
         pnl_dashboard=pnl_dashboard,
         is_write_unlocked=_is_write_unlocked(),
+        current_user=_current_tracker_user(),
         error=error, success=success,
     )
 
@@ -2224,7 +2274,7 @@ def run_model():
     if auth_redirect:
         return auth_redirect
 
-    tracker = SeasonTracker(year)
+    tracker = _season_tracker(year)
 
     # Set bankroll if not locked
     if not tracker.has_any_locked():
@@ -2289,7 +2339,7 @@ def run_projection():
     if auth_redirect:
         return auth_redirect
 
-    tracker = SeasonTracker(year)
+    tracker = _season_tracker(year)
     week_data = tracker.get_week(week) or {}
 
     team_stats = week_data.get("team_stats", {})
@@ -2371,7 +2421,7 @@ def run_mirofish():
     if auth_redirect:
         return auth_redirect
 
-    tracker = SeasonTracker(year)
+    tracker = _season_tracker(year)
     week_data = tracker.get_week(week)
 
     if not week_data or week_data["status"] != "pending":
@@ -2414,7 +2464,7 @@ def toggle_bet():
     week = data.get("week", 1)
     bet_id = data.get("bet_id")
 
-    tracker = SeasonTracker(year)
+    tracker = _season_tracker(year)
     tracker.toggle_bet(week, bet_id)
 
     week_data = tracker.get_week(week)
@@ -2441,7 +2491,7 @@ def sync_selection():
     week = data.get("week", 1)
     selected_ids = data.get("selected_ids", [])
 
-    tracker = SeasonTracker(year)
+    tracker = _season_tracker(year)
     ok = tracker.set_selected_bets(week, selected_ids)
     week_data = tracker.get_week(week) or {"bets": []}
     bets = week_data.get("bets", [])
@@ -2464,7 +2514,7 @@ def lock_bets():
     if auth_redirect:
         return auth_redirect
 
-    tracker = SeasonTracker(year)
+    tracker = _season_tracker(year)
 
     # Check at least one bet is selected
     week_data = tracker.get_week(week)
@@ -2487,10 +2537,25 @@ def unlock_bets():
     if auth_redirect:
         return auth_redirect
 
-    tracker = SeasonTracker(year)
+    tracker = _season_tracker(year)
     if tracker.unlock_bets(week):
         return redirect(f"/?year={year}&week={week}&success=Bets+unlocked")
     return redirect(f"/?year={year}&week={week}&error=Could+not+unlock+bets")
+
+
+@app.route("/reset-week", methods=["POST"])
+def reset_week():
+    year = request.form.get("year", 2025, type=int)
+    week = request.form.get("week", 1, type=int)
+
+    auth_redirect = _require_write_auth_redirect(year, week)
+    if auth_redirect:
+        return auth_redirect
+
+    tracker = _season_tracker(year)
+    if tracker.reset_week(week):
+        return redirect(f"/?year={year}&week={week}&success=Week+reset")
+    return redirect(f"/?year={year}&week={week}&error=Nothing+to+reset")
 
 
 @app.route("/grade", methods=["POST"])
@@ -2502,7 +2567,7 @@ def grade_week():
     if auth_redirect:
         return auth_redirect
 
-    tracker = SeasonTracker(year)
+    tracker = _season_tracker(year)
     week_data = tracker.get_week(week)
 
     if not week_data or week_data["status"] not in ("locked", "graded"):
