@@ -10,6 +10,7 @@ Usage:
 """
 
 import json
+import hmac
 import os
 import re
 import numpy as np
@@ -22,7 +23,7 @@ import requests
 from data_loader import (
     load_master_data, load_team_glossary, load_schedule,
     get_weekid_range, filter_master_data, build_abbr_to_name, compute_weekid,
-    BACK_TEST_RANGE, YEAR_INDEX_MAP,
+    BACK_TEST_RANGE, YEAR_INDEX_MAP, CURRENT_SEASON_WEIGHT,
 )
 from features import build_feature_table
 from predictor import predict_week, compute_bet_sizing
@@ -1724,7 +1725,10 @@ def _run_model(year: int, week: int, bet_pct: int = 100):
             schedule = scrape_schedule(year, week)
 
         weekids = get_weekid_range(year, week)
-        filtered = filter_master_data(master, weekids)
+        filtered = filter_master_data(
+            master, weekids, current_season=year,
+            current_season_weight=CURRENT_SEASON_WEIGHT,
+        )
         if len(filtered) == 0:
             return None, None, None, None, "No historical data in lookback window."
 
@@ -1854,18 +1858,22 @@ def _get_graded_weeks(tracker: SeasonTracker) -> list:
 
 
 def _configured_password() -> str:
-    """Return the dashboard write password from deployment env."""
+    """Return the dashboard sign-in password from deployment env."""
     return (
         os.environ.get("APP_PASSWORD")
         or os.environ.get("VITE_APP_PASSWORD")
         or os.environ.get("NEXT_PUBLIC_APP_PASSWORD")
-        or ""
+        or "NflDash"
     )
 
 
 def _is_write_unlocked() -> bool:
     password = _configured_password()
-    return bool(session.get("screen_user")) and (not password or bool(session.get("write_unlocked")))
+    return (
+        bool(session.get("screen_user"))
+        and bool(session.get("write_unlocked"))
+        and session.get("auth_password") == password
+    )
 
 
 def _screen_user(raw_user: str) -> str:
@@ -2201,11 +2209,13 @@ def _build_pnl_dashboard(tracker: SeasonTracker, mode: str) -> dict:
 def auth_write_actions():
     data = request.get_json(silent=True) or {}
     password = _configured_password()
-    if not password or data.get("password") == password:
+    submitted = str(data.get("password") or "")
+    if hmac.compare_digest(submitted, password):
         screen_user = _screen_user(data.get("user"))
         if not screen_user:
             return jsonify({"ok": False, "error": "Name required"}), 400
         session["write_unlocked"] = True
+        session["auth_password"] = password
         session["screen_user"] = screen_user
         last_screen = _load_last_screen(screen_user) if screen_user else None
         return jsonify({"ok": True, "user": screen_user, "last_screen": last_screen})
@@ -2215,6 +2225,7 @@ def auth_write_actions():
 @app.route("/sign-out", methods=["POST"])
 def sign_out():
     session.pop("write_unlocked", None)
+    session.pop("auth_password", None)
     session.pop("screen_user", None)
     return redirect(f"/?year={DEFAULT_YEAR}&week=1")
 

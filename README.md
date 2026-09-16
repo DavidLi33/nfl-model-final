@@ -32,6 +32,24 @@ Optional:
 - add `--scrape` to update data before running,
 - pass `--schedule schedule_week1_2025.csv` for a specific schedule file.
 
+For an in-season run, `--scrape` refreshes the immediately preceding week in
+`master_data.csv` before calculating predictions. The model uses the six most
+recent completed weeks that are actually available, so missing source weeks do
+not shorten the window. Current-season games receive 2x weight by default
+(`CURRENT_SEASON_WEIGHT` in `data_loader.py`). For example, 2026 Week 2 uses
+2025 Weeks 12-16 plus 2026 Week 1 when 2025 Weeks 17-18 are unavailable, and
+the 2026 Week 1 rows count twice in feature calculations.
+
+```bash
+python main.py --year 2026 --week 2 --bankroll 1000 --bet-pct 20 --scrape
+```
+
+To refresh Week 1 without running predictions:
+
+```bash
+python scraper.py --season 2026 --week 1 --update-master master_data.csv
+```
+
 ### 3) Run the dashboard
 ```bash
 python dashboard.py
@@ -64,6 +82,9 @@ Set these environment variables:
 APP_PASSWORD=<your write-action password>
 SECRET_KEY=<long random string>
 ```
+
+If `APP_PASSWORD` is not set, the dashboard sign-in password defaults to
+`NflDash`.
 
 Optional cross-device last-screen restore and durable tracker state use Upstash
 Redis. Create a free Upstash Redis database and add:

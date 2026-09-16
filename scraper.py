@@ -276,15 +276,17 @@ def scrape_schedule(season: int, week: int) -> pd.DataFrame:
 
 
 def update_master_data(master_path: str, seasons: List[int],
-                       max_week: int = 18) -> pd.DataFrame:
+                       max_week: int = 18,
+                       weeks: Optional[List[int]] = None) -> pd.DataFrame:
     """Build or update the master data CSV from nflverse data.
 
-    Scrapes any seasons not already present in the master data.
+    Scrapes missing seasons, or refreshes specific weeks when ``weeks`` is set.
 
     Args:
         master_path: Path to master_data.csv.
         seasons: List of seasons to include.
-        max_week: Max week per season.
+        max_week: Max week per season for full-season imports.
+        weeks: Optional week numbers to replace/append for each season.
 
     Returns:
         Updated DataFrame.
@@ -299,12 +301,21 @@ def update_master_data(master_path: str, seasons: List[int],
 
     new_dfs = []
     for season in seasons:
-        if season in existing_seasons:
+        if weeks:
+            print(f"\n{season}: refreshing weeks {weeks}...")
+            df = scrape_weeks(season, weeks)
+            if not existing.empty:
+                existing = existing[
+                    ~((existing['season'] == season) & existing['week'].isin(weeks))
+                ]
+            new_dfs.append(df)
+        elif season in existing_seasons:
             print(f"{season}: already in master data, skipping")
             continue
-        print(f"\n{season}: scraping...")
-        df = scrape_season(season, max_week)
-        new_dfs.append(df)
+        else:
+            print(f"\n{season}: scraping...")
+            df = scrape_season(season, max_week)
+            new_dfs.append(df)
 
     if new_dfs:
         new_data = pd.concat(new_dfs, ignore_index=True)
@@ -330,10 +341,16 @@ if __name__ == "__main__":
     parser.add_argument('--schedule', action='store_true',
                         help="Also generate schedule CSV with odds/spreads")
     parser.add_argument('--output', default=None, help="Output CSV path")
+    parser.add_argument('--update-master', default=None, metavar='PATH',
+                        help="Replace/append the requested week(s) in a master CSV")
 
     args = parser.parse_args()
 
-    if args.week:
+    if args.update_master:
+        weeks = [args.week] if args.week else None
+        df = update_master_data(args.update_master, [args.season], weeks=weeks)
+        out_path = args.update_master
+    elif args.week:
         print(f"Scraping {args.season} Week {args.week}...")
         df = scrape_weeks(args.season, [args.week])
         out_path = args.output or f"scraped_{args.season}_week{args.week}.csv"
@@ -348,5 +365,6 @@ if __name__ == "__main__":
         df = scrape_season(args.season)
         out_path = args.output or f"scraped_{args.season}.csv"
 
-    df.to_csv(out_path, index=False)
-    print(f"\nGame data saved: {out_path} ({len(df)} rows, {len(df)//2} games)")
+    if not args.update_master:
+        df.to_csv(out_path, index=False)
+        print(f"\nGame data saved: {out_path} ({len(df)} rows, {len(df)//2} games)")

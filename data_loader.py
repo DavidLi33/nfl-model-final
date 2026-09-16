@@ -16,6 +16,7 @@ YEAR_INDEX_MAP: Dict[int, int] = {2022: 1, 2023: 2, 2024: 3, 2025: 4, 2026: 5, 2
 
 # Fixed model parameters
 BACK_TEST_RANGE: int = 6
+CURRENT_SEASON_WEIGHT: int = 2
 DEFAULT_SPREAD_ODDS: int = -110
 DEFAULT_TOTAL_ODDS: int = -110
 POISSON_GRID_SIZE: int = 80
@@ -171,7 +172,9 @@ def get_weekid_range(current_year: int, current_week: int,
     return weekids
 
 
-def filter_master_data(master_df: pd.DataFrame, weekids: list) -> pd.DataFrame:
+def filter_master_data(master_df: pd.DataFrame, weekids: list,
+                       current_season: Optional[int] = None,
+                       current_season_weight: int = 1) -> pd.DataFrame:
     """Filter master data to only include rows with weekids in the given list.
 
     Args:
@@ -181,7 +184,31 @@ def filter_master_data(master_df: pd.DataFrame, weekids: list) -> pd.DataFrame:
     Returns:
         Filtered DataFrame.
     """
-    return master_df[master_df['weekid'].isin(weekids)].copy().reset_index(drop=True)
+    if not weekids:
+        return master_df.iloc[0:0].copy()
+
+    # Fill source-data gaps with the most recent available completed weeks.
+    # Thus 2026 Week 2 can use 2025 Weeks 12-16 plus 2026 Week 1 when
+    # 2025 Weeks 17-18 are absent.
+    cutoff = max(weekids)
+    available = sorted(
+        int(w) for w in master_df.loc[master_df['weekid'] <= cutoff, 'weekid']
+        .dropna().unique()
+    )
+    selected_weekids = available[-len(weekids):]
+    filtered = master_df[master_df['weekid'].isin(selected_weekids)].copy()
+
+    # Repeating current-season rows gives them a consistent integer weight in
+    # every downstream mean, regression, win-rate, SOW and volatility feature.
+    if current_season is not None and current_season_weight > 1:
+        current_rows = filtered[filtered['season'] == current_season]
+        if not current_rows.empty:
+            filtered = pd.concat(
+                [filtered] + [current_rows.copy()] * (current_season_weight - 1),
+                ignore_index=True,
+            )
+
+    return filtered.reset_index(drop=True)
 
 
 if __name__ == "__main__":

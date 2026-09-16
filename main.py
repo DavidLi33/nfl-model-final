@@ -16,7 +16,7 @@ from pathlib import Path
 from data_loader import (
     load_master_data, load_team_glossary, load_schedule, load_spread_to_ml,
     get_weekid_range, filter_master_data, build_abbr_to_name, build_name_to_abbr,
-    BACK_TEST_RANGE,
+    BACK_TEST_RANGE, CURRENT_SEASON_WEIGHT,
 )
 from features import build_feature_table
 from predictor import predict_week, compute_bet_sizing
@@ -52,22 +52,9 @@ def run_prediction(year: int, week: int, bankroll: float,
 
     if scrape:
         from scraper import update_master_data
-        # Determine which weeks we need data for
-        weekids_needed = get_weekid_range(year, week)
-        # Find the seasons and weeks we need
-        weeks_to_check = []
-        for wid in weekids_needed:
-            # Reverse-engineer season/week from weekid
-            for y in range(2022, year + 1):
-                from data_loader import YEAR_INDEX_MAP
-                idx = YEAR_INDEX_MAP.get(y, 0)
-                for w in range(1, 19):
-                    if idx * 18 - (18 - w) == wid:
-                        weeks_to_check.append((y, w))
-
-        print(f"Scraping data for weeks: {weeks_to_check}")
-        for s, w in weeks_to_check:
-            update_master_data(master_data_path, s, [w])
+        if week > 1:
+            print(f"Refreshing {year} Week {week - 1} game data")
+            update_master_data(master_data_path, [year], weeks=[week - 1])
 
     master = load_master_data(master_data_path)
     glossary = load_team_glossary()
@@ -94,7 +81,10 @@ def run_prediction(year: int, week: int, bankroll: float,
 
     # Step 3: Filter historical data
     weekids = get_weekid_range(year, week)
-    filtered = filter_master_data(master, weekids)
+    filtered = filter_master_data(
+        master, weekids, current_season=year,
+        current_season_weight=CURRENT_SEASON_WEIGHT,
+    )
     print(f"Historical window: {BACK_TEST_RANGE} weeks ({len(filtered)} game-rows)")
 
     if len(filtered) == 0:
