@@ -162,6 +162,13 @@ def get_weekid_range(current_year: int, current_week: int,
     Returns:
         List of weekid integers.
     """
+    # 2026 Week 2 uses the agreed bridge window: 2025 Weeks 13-17 and
+    # 2026 Week 1. Week 18 is intentionally excluded.
+    if current_year == 2026 and current_week == 2 and back_test_range == 6:
+        return [
+            compute_weekid(2025, week) for week in range(13, 18)
+        ] + [compute_weekid(2026, 1)]
+
     # The current week's weekid
     current_weekid = compute_weekid(current_year, current_week)
 
@@ -187,15 +194,28 @@ def filter_master_data(master_df: pd.DataFrame, weekids: list,
     if not weekids:
         return master_df.iloc[0:0].copy()
 
-    # Fill source-data gaps with the most recent available completed weeks.
-    # Thus 2026 Week 2 can use 2025 Weeks 12-16 plus 2026 Week 1 when
-    # 2025 Weeks 17-18 are absent.
-    cutoff = max(weekids)
-    available = sorted(
-        int(w) for w in master_df.loc[master_df['weekid'] <= cutoff, 'weekid']
-        .dropna().unique()
+    # The explicitly non-contiguous 2026 Week 2 bridge window must be exact;
+    # silently substituting an older week would make the run misleading.
+    is_explicit_bridge = any(
+        right - left != 1 for left, right in zip(weekids, weekids[1:])
     )
-    selected_weekids = available[-len(weekids):]
+    if is_explicit_bridge:
+        available = set(int(w) for w in master_df['weekid'].dropna().unique())
+        missing = [w for w in weekids if w not in available]
+        if missing:
+            raise ValueError(
+                f"Required historical weekids are missing from master data: {missing}"
+            )
+        selected_weekids = weekids
+    else:
+        # For ordinary windows, fill source-data gaps with the most recent
+        # available completed weeks so the sample remains six weeks long.
+        cutoff = max(weekids)
+        available = sorted(
+            int(w) for w in master_df.loc[master_df['weekid'] <= cutoff, 'weekid']
+            .dropna().unique()
+        )
+        selected_weekids = available[-len(weekids):]
     filtered = master_df[master_df['weekid'].isin(selected_weekids)].copy()
 
     # Repeating current-season rows gives them a consistent integer weight in
