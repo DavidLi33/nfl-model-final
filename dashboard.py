@@ -221,6 +221,33 @@ TEMPLATE = """
   .stats-compare td:first-child { text-align: right; }
   .stats-compare td:last-child { text-align: left; }
   .stats-compare .better { color: var(--green); font-weight: 600; }
+  .recent-history { margin-top: 9px; border: 1px solid var(--border);
+                    border-radius: 6px; background: rgba(15,17,23,0.45); }
+  .recent-history summary { cursor: pointer; padding: 7px 9px; color: var(--muted);
+                            font-size: 0.72rem; font-weight: 700; user-select: none;
+                            list-style: none; text-align: center; }
+  .recent-history summary::-webkit-details-marker { display: none; }
+  .recent-history summary::before { content: '+ '; color: var(--accent); }
+  .recent-history[open] summary::before { content: '\2212  '; }
+  .recent-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+                 padding: 0 8px 8px; }
+  .recent-team { min-width: 0; }
+  .recent-team-title { color: var(--text); font-size: 0.72rem; font-weight: 700;
+                       padding: 3px 0 5px; text-align: center; }
+  .recent-game { display: grid; grid-template-columns: 20px 42px 1fr auto;
+                 gap: 4px; align-items: center; padding: 4px 5px; margin-bottom: 3px;
+                 border-radius: 4px; background: var(--surface); font-size: 0.68rem; }
+  .recent-result { width: 18px; height: 18px; border-radius: 50%; display: grid;
+                   place-items: center; font-weight: 800; font-size: 0.62rem; }
+  .recent-result.win { background: rgba(76,175,80,0.18); color: var(--green); }
+  .recent-result.loss { background: rgba(244,67,54,0.18); color: var(--red); }
+  .recent-result.tie { background: rgba(255,193,7,0.18); color: var(--yellow); }
+  .recent-week { color: var(--muted); }
+  .recent-opponent { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recent-score { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  @media (max-width: 520px) {
+    .recent-grid { grid-template-columns: 1fr; }
+  }
 
   /* Action bar */
   .action-bar { display: flex; gap: 12px; align-items: center; margin: 20px 0;
@@ -609,6 +636,26 @@ TEMPLATE = """
             </tr>
           </tbody>
         </table>
+        <details class="recent-history">
+          <summary>Recent results · model window</summary>
+          <div class="recent-grid">
+            {% for abbr, stats in [(g.away_team, a), (g.home_team, h)] %}
+            <div class="recent-team">
+              <div class="recent-team-title">{{ abbr }}</div>
+              {% for game in stats.get('recent_games', []) %}
+              <div class="recent-game" title="{{ game.season }} Week {{ game.week }}: {{ abbr }} {{ game.points_for }}–{{ game.points_against }} {{ game.opponent }}">
+                <span class="recent-result {{ 'win' if game.result == 'W' else ('loss' if game.result == 'L' else 'tie') }}">{{ game.result }}</span>
+                <span class="recent-week">{{ game.season % 100 }}·W{{ game.week }}</span>
+                <span class="recent-opponent">{{ game.opponent }}</span>
+                <span class="recent-score">{{ game.points_for }}–{{ game.points_against }}</span>
+              </div>
+              {% else %}
+              <div style="color:var(--muted); font-size:0.68rem; text-align:center; padding:6px;">No history available</div>
+              {% endfor %}
+            </div>
+            {% endfor %}
+          </div>
+        </details>
       </div>
     </div>
     {% endfor %}
@@ -1746,7 +1793,12 @@ def _run_model(year: int, week: int, bet_pct: int = 100):
         for _, row in feature_table.iterrows():
             abbr = name_to_abbr.get(row['team'], '')
             if abbr:
-                team_stats[abbr] = row.to_dict()
+                stats = row.to_dict()
+                for game in stats.get('recent_games', []):
+                    game['opponent'] = name_to_abbr.get(
+                        game.get('opponent'), game.get('opponent', '')
+                    )
+                team_stats[abbr] = stats
 
         return predictions, team_stats, turnover_slopes, float(avg_sow), None
 

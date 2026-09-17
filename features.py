@@ -244,6 +244,45 @@ def compute_avg_sow(sorted_avgs: pd.DataFrame) -> float:
     return sorted_avgs['sow'].mean()
 
 
+def compute_recent_game_history(filtered_df: pd.DataFrame) -> Dict[str, list]:
+    """Return each team's chronological results from the active model window.
+
+    Games are grouped by their schedule identity instead of relying on row
+    position. This keeps the history correct if source rows are re-ordered.
+    """
+    histories: Dict[str, list] = {}
+    game_keys = ['season', 'week', 'date', 'away', 'home']
+
+    for _, game in filtered_df.groupby(game_keys, sort=False, dropna=False):
+        if len(game) != 2:
+            continue
+
+        rows = list(game.to_dict('records'))
+        for row, opponent_row in ((rows[0], rows[1]), (rows[1], rows[0])):
+            scored = int(row['offense_points'])
+            allowed = int(row['defense_points'])
+            if scored > allowed:
+                result = 'W'
+            elif scored < allowed:
+                result = 'L'
+            else:
+                result = 'T'
+
+            histories.setdefault(row['offense'], []).append({
+                'season': int(row['season']),
+                'week': int(row['week']),
+                'opponent': opponent_row['offense'],
+                'result': result,
+                'points_for': scored,
+                'points_against': allowed,
+            })
+
+    for games in histories.values():
+        games.sort(key=lambda game: (game['season'], game['week']))
+
+    return histories
+
+
 def build_feature_table(master_df: pd.DataFrame,
                         filtered_df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, float], float]:
     """Build the complete feature table from filtered data.
@@ -271,6 +310,12 @@ def build_feature_table(master_df: pd.DataFrame,
 
     # Steps 10-14: Win rates, SOW, stdev
     sorted_avgs = compute_win_rates(filtered_df, sorted_avgs)
+
+    # Auditable game-by-game history for the dashboard.
+    recent_games = compute_recent_game_history(filtered_df)
+    sorted_avgs['recent_games'] = sorted_avgs['team'].map(
+        lambda team: recent_games.get(team, [])
+    )
 
     # Step 14: Average SOW
     avg_sow = compute_avg_sow(sorted_avgs)
