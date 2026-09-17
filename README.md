@@ -35,11 +35,10 @@ Optional:
 For an in-season run, `--scrape` refreshes the immediately preceding week in
 `master_data.csv` before calculating predictions. The model uses the six most
 recent completed weeks that are actually available, so missing source weeks do
-not shorten ordinary windows. Current-season games receive 2x weight by default
-(`CURRENT_SEASON_WEIGHT` in `data_loader.py`). The explicit 2026 Week 2 bridge
-window uses 2025 Weeks 13-17 plus 2026 Week 1, excludes 2025 Week 18, and counts
-the 2026 Week 1 rows twice. The run fails clearly if one of those required weeks
-is absent instead of silently substituting an older week.
+not shorten ordinary windows. Every game has equal weight. The explicit 2026
+Week 2 bridge window uses 2025 Weeks 13-17 plus 2026 Week 1 and excludes 2025
+Week 18. The run fails clearly if one of those required weeks is absent instead
+of silently substituting an older week.
 
 ```bash
 python main.py --year 2026 --week 2 --bankroll 1000 --bet-pct 20 --scrape
