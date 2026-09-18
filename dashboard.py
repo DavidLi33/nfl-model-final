@@ -720,12 +720,21 @@ TEMPLATE = """
           <div class="team-pts">{{ "%.1f"|format(g.home_predicted_pts) }}</div>
         </div>
       </div>
+      {% if g.actual_away is not none %}
+      <div class="actual-scores">
+        Final: <span>{{ g.actual_away }}</span> &ndash; <span>{{ g.actual_home }}</span>
+      </div>
+      {% endif %}
       {% for b in g.bets %}
         {% if b.selected %}
         <div class="bet-row locked selected" data-bet-row data-bet-id="{{ b.id }}" data-selected="true"
              data-team="{{ b.pick }}" data-type="{{ b.type }}" data-line="{{ b.get('spread_points', b.get('total_line', '')) }}"
              data-odds="{{ b.odds }}" data-amount="{{ b.amount }}" data-pick="{{ b.pick }}">
+          {% if b.result in ('win', 'loss', 'push') %}
+          <span class="result-badge {{ b.result }}">{{ b.result }}</span>
+          {% else %}
           <div style="color:var(--blue); font-size:0.9rem; width:28px; text-align:center;">[L]</div>
+          {% endif %}
           <div class="bet-info">
             <span class="bet-type">{{ b.type|upper }}</span>
             <span class="bet-pick">{{ b.pick }}</span>
@@ -1844,25 +1853,13 @@ def _build_games_list(week_data: dict) -> list:
             bets_by_game[gn] = []
         bets_by_game[gn].append(b)
 
-    # Fetch actual scores if graded
-    actual_scores = {}
-    if week_data["status"] == "graded":
-        for b in bets:
-            if b.get("result") in ("win", "loss", "push"):
-                # We can reconstruct actual scores from bet results and predictions
-                pass  # handled below via game_results stored at grade time
-
     games = []
     for pred in predictions:
         gn = pred["game_number"]
 
-        # Try to find actual scores from graded bets
-        actual_away = None
-        actual_home = None
-        if week_data["status"] == "graded":
-            # Look for actual scores in the stored data
-            actual_away = pred.get("actual_away_score")
-            actual_home = pred.get("actual_home_score")
+        # Scores can be present while the rest of the slate is still pending.
+        actual_away = pred.get("actual_away_score")
+        actual_home = pred.get("actual_home_score")
 
         games.append({
             "game_number": gn,
@@ -2685,7 +2682,14 @@ def grade_week():
         # Save updated predictions with actual scores
         tracker.data["weeks"][str(week)]["predictions"] = predictions
         tracker.save()
-        return redirect(f"/?year={year}&week={week}&success=Week+graded")
+        completed = sum(
+            1 for pred in predictions
+            if pred.get("actual_away_score") is not None
+            and pred.get("actual_home_score") is not None
+        )
+        total = len(predictions)
+        message = "Week+graded" if completed == total else f"Results+updated:+{completed}+of+{total}+games+final"
+        return redirect(f"/?year={year}&week={week}&success={message}")
 
     return redirect(f"/?year={year}&week={week}&error=Could+not+grade+week")
 

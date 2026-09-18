@@ -435,18 +435,19 @@ class SeasonTracker:
         return 0.0
 
     def grade_week(self, week: int, game_results: Dict[int, dict]) -> bool:
-        """Grade a week's bets with actual results.
+        """Grade every currently completed game in a week.
 
         game_results: {game_number: {away_team, home_team, away_score, home_score}}
         Can be called on locked or graded weeks (to re-grade with updated scores).
+        A partially completed slate remains locked; it becomes graded only after
+        every predicted game has a stored final score.
         """
         wk_str = str(week)
         wk_data = self.data["weeks"].get(wk_str)
         if not wk_data or wk_data["status"] not in ("locked", "graded"):
             return False
 
-        total_pnl = 0.0
-        graded_any = False
+        found_any = bool(game_results)
 
         for bet in wk_data["bets"]:
             if not bet["selected"] or bet["amount"] == 0:
@@ -457,16 +458,27 @@ class SeasonTracker:
             if not result:
                 continue
 
-            graded_any = True
             bet["result"] = self.grade_bet_result(bet, result)
             bet["pnl"] = self.pnl_for_bet(bet, bet["result"])
 
-            total_pnl += bet["pnl"]
+        # Include results from earlier partial grading passes as well as the
+        # games returned by this pass.
+        total_pnl = sum(
+            float(b.get("pnl", 0) or 0)
+            for b in wk_data["bets"]
+            if b.get("selected") and b.get("result") in ("win", "loss", "push")
+        )
 
-        if graded_any:
+        if found_any:
             wk_data["bankroll_after"] = round(
                 wk_data["bankroll_before"] + total_pnl, 2)
-            wk_data["status"] = "graded"
+            predictions = wk_data.get("predictions", [])
+            all_games_final = bool(predictions) and all(
+                pred.get("actual_away_score") is not None
+                and pred.get("actual_home_score") is not None
+                for pred in predictions
+            )
+            wk_data["status"] = "graded" if all_games_final else "locked"
             wk_data["graded_at"] = datetime.now().isoformat()
             self.save()
             return True
