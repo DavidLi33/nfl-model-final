@@ -49,12 +49,36 @@ NFLVERSE_ABBR_MAP = {
     'STL': 'LAR',
 }
 
+# Only these play-by-play fields are used by the game-level aggregation.  In
+# particular, this scraper does not use the separate participation dataset.
+PBP_COLUMNS = [
+    'game_id', 'week', 'play_type', 'posteam', 'passing_yards',
+    'pass_attempt', 'rushing_yards', 'rush_attempt', 'interception',
+    'fumble_lost', 'sack', 'touchdown',
+]
+
 
 def _fix_abbr(abbr: str) -> str:
     """Convert nflverse abbreviation to our model's abbreviation."""
     if pd.isna(abbr):
         return ''
     return NFLVERSE_ABBR_MAP.get(abbr, abbr)
+
+
+def _load_pbp(season: int) -> pd.DataFrame:
+    """Load the PBP fields used by this project.
+
+    ``nfl_data_py`` enables its optional participation-data merge by default.
+    Current-season participation files can lag behind the main PBP release,
+    and nfl_data_py 0.3.3 masks that 404 with ``NameError: Error``.  We do not
+    use participation columns, so explicitly disabling that merge avoids both
+    the unnecessary download and the upstream error.
+    """
+    return nfl.import_pbp_data(
+        [season],
+        columns=PBP_COLUMNS,
+        include_participation=False,
+    )
 
 
 def _aggregate_game_stats(pbp: pd.DataFrame, season: int) -> pd.DataFrame:
@@ -182,7 +206,7 @@ def scrape_season(season: int, max_week: int = 18) -> pd.DataFrame:
         DataFrame in master_data.csv format.
     """
     print(f"Downloading {season} play-by-play data...")
-    pbp = nfl.import_pbp_data([season])
+    pbp = _load_pbp(season)
     print(f"  {len(pbp)} plays loaded")
 
     # Filter to regular season weeks
@@ -206,7 +230,7 @@ def scrape_weeks(season: int, weeks: List[int]) -> pd.DataFrame:
         DataFrame in master_data.csv format.
     """
     print(f"Downloading {season} play-by-play data...")
-    pbp = nfl.import_pbp_data([season])
+    pbp = _load_pbp(season)
 
     # Filter to requested weeks
     pbp = pbp[pbp['week'].isin(weeks)]
